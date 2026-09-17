@@ -7,7 +7,8 @@
 * { box-sizing:border-box; }
 html { background:var(--paper); color:var(--ink); scroll-padding-top:24px; }
 body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; font-size:var(--reading-size); line-height:1.85; overflow-wrap:break-word; }
-article { max-width:840px; padding:42px 48px 100px; margin:auto; min-height:100vh; }
+/* The page reaches the bottom of the screen, so the last lines clear the home indicator. */
+article { max-width:840px; padding:42px 48px calc(100px + env(safe-area-inset-bottom)); margin:auto; min-height:100vh; }
 h1,h2,h3,h4 { line-height:1.45; letter-spacing:-.02em; }
 h1 { font-size:1.9em; margin:0 0 1em; font-weight:650; }
 h2 { font-size:1.4em; margin:2em 0 .8em; padding-top:.3em; border-top:1px solid var(--line); }
@@ -17,19 +18,23 @@ li { padding-left:.15em; margin:.3em 0; }
 blockquote { margin:1.2em 0; border-left:3px solid var(--accent); padding:.15em 1em; color:var(--muted); }
 a { color:var(--accent); text-decoration-thickness:1px; text-underline-offset:3px; }
 img { display:block; max-width:100%; height:auto; margin:1.5em auto; border-radius:8px; }
-table { display:block; max-width:100%; overflow-x:auto; border-collapse:collapse; margin:1.4em 0; font-size:.92em; }
+table { display:block; max-width:100%; overflow-x:auto; overscroll-behavior-x:contain; border-collapse:collapse; margin:1.4em 0; font-size:.92em; }
 th,td { padding:.6em .95em; text-align:left; border-bottom:1px solid var(--line); white-space:nowrap; }
 th { background:var(--soft); font-weight:600; }
-pre { padding:1em 1.2em; overflow-x:auto; border-radius:10px; background:var(--soft); line-height:1.6; }
+pre { padding:1em 1.2em; overflow-x:auto; overscroll-behavior-x:contain; border-radius:10px; background:var(--soft); line-height:1.6; }
 code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.85em; }
 :not(pre)>code { background:var(--soft); padding:.15em .3em; border-radius:4px; }
-.katex-display { max-width:100%; overflow-x:auto; overflow-y:hidden; padding:.5em .1em; margin:1.4em 0; }
+.katex-display { max-width:100%; overflow-x:auto; overflow-y:hidden; overscroll-behavior-x:contain; padding:.5em .1em; margin:1.4em 0; }
 .katex { font-size:1.1em; cursor:text; }
+/* KaTeX mirrors every formula as an invisible 1px MathML twin that only a screen reader uses.
+   Laying it out is about a third of the first layout of a long article, and it holds no space, so
+   it is skipped while nothing is reading it. The app sets data-assistive when VoiceOver is on. */
+:root:not([data-assistive]) .katex .katex-mathml { content-visibility:hidden; }
 .katex-display>.katex { display:block; min-width:min-content; padding-inline:4px; }
 .answer { margin:1.3em 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:.6em 0; }
 .answer>summary { cursor:pointer; font-weight:600; color:var(--accent); padding:.3em 0; }
 .answer[open] { padding-bottom:1em; }
 .image-missing { display:block; color:var(--muted); padding:1em; background:var(--soft); border-radius:8px; }
 ::selection { background:#95c8ae66; }
-@media(max-width:600px) { article { padding:28px 22px 80px; } h1 { font-size:1.55em; } }
+@media(max-width:600px) { article { padding:28px 22px calc(80px + env(safe-area-inset-bottom)); } h1 { font-size:1.55em; } }
 @media(prefers-reduced-motion:reduce) { * { scroll-behavior:auto!important; } }

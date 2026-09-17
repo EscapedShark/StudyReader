@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { parseHTML } from 'linkedom';
-import { renderMarkdown, stripFrontMatter, localImageURL, foldAnswers } from '../WebReader/markdown.mjs';
+import { renderMarkdown, stripFrontMatter, localImageURL, attachmentPath, foldAnswers } from '../WebReader/markdown.mjs';
 
 function documentFor(html) { return parseHTML(`<html><body><article>${html}</article></body></html>`).document; }
 
@@ -67,4 +67,31 @@ test('unsupported formula stays local and subsequent paragraphs remain readable'
   const result = renderMarkdown('$\\notARealCommand{x}$\n\n仍然可以阅读。');
   assert.match(result.html, /仍然可以阅读/);
   assert.match(result.html, /notARealCommand/);
+});
+
+test('known attachments reserve their box and unknown ones are left to measure themselves', () => {
+  const base = 'reader://library/group-1/notes/a.md';
+  // The app keys sizes by the path inside the collection, decoded and precomposed.
+  const sizes = { 'assets/图.png': [1200, 800], 'notes/plain.png': [640, 640] };
+  const result = renderMarkdown('![图](../assets/图.png)\n\n![plain](plain.png)\n\n![gone](missing.png)\n', base, sizes);
+  const images = [...documentFor(result.html).querySelectorAll('img')];
+  assert.equal(images.length, 3);
+  assert.deepEqual([images[0].getAttribute('width'), images[0].getAttribute('height')], ['1200', '800']);
+  assert.deepEqual([images[1].getAttribute('width'), images[1].getAttribute('height')], ['640', '640']);
+  assert.equal(images[2].getAttribute('width'), null);
+  assert.equal(images[2].getAttribute('height'), null);
+  // The same source without a size table keeps the previous markup exactly.
+  const bare = documentFor(renderMarkdown('![图](../assets/图.png)\n', base).html).querySelector('img');
+  assert.equal(bare.getAttribute('width'), null);
+  assert.equal(bare.getAttribute('src'), 'reader://library/group-1/assets/%E5%9B%BE.png');
+});
+
+test('attachment paths survive percent encoding, decomposed names and foreign collections', () => {
+  assert.equal(attachmentPath('reader://library/group-1/assets/%E5%9B%BE.png'), 'assets/图.png');
+  assert.equal(attachmentPath('reader://library/group-1/a%20b/c%2Bd.png'), 'a b/c+d.png');
+  // A decomposed file name from the file system still matches the precomposed key.
+  assert.equal(attachmentPath('reader://library/g/' + encodeURIComponent('é'.normalize('NFD')) + '.png'),
+               'é'.normalize('NFC') + '.png');
+  assert.equal(attachmentPath('https://example.com/a.png'), '');
+  assert.equal(attachmentPath(''), '');
 });

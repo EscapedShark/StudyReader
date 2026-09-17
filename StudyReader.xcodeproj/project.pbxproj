@@ -545,6 +545,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = StudyReader/StudyReader.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				"CODE_SIGN_STYLE[sdk=iphonesimulator*]" = Manual;
+				"CODE_SIGN_STYLE[sdk=macosx*]" = Manual;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = Z42JP5B5V8;
 				ENABLE_APP_SANDBOX = YES;

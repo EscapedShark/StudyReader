@@ -27,7 +27,7 @@ function fixture() {
   vm.runInContext(source,context);
   const payload=id=>({id,content:'# '+id+'\n\n'+Array.from({length:20},(_v,i)=>`${id} paragraph ${i}`).join('\n\n'),baseURL:`reader://library/${id}/a.md`,preferences});
   const gate=()=>{let release;document.fonts.ready=new Promise(resolve=>{release=resolve;});return release;};
-  return {context,document,messages,payload,gate,reader:context.window.Reader,emit:(name,event={})=>listeners.get(name)?.(event)};
+  return {context,document,window,messages,payload,gate,reader:context.window.Reader,emit:(name,event={})=>listeners.get(name)?.(event)};
 }
 
 test('a pending preference restore cannot move the next article',async()=>{
@@ -161,4 +161,74 @@ test('an explicitly supplied remote position overrides the same-document WebView
     position:{anchor:'line-4',excerpt:'',offset:0,progress:0.1}});
   assert.equal(f.context.scrollY,400);
   assert.equal(f.reader.save().activity,null);
+});
+
+test('the reading position tracks scrolling in both directions and skips collapsed blocks',async()=>{
+  const f=fixture();
+  await f.reader.render(f.payload('A'));
+  const anchors=[...f.document.querySelectorAll('.reading-block')].map(el=>el.dataset.anchor);
+  assert.ok(anchors.length>10);
+  // Answers folded away have no box. The walk has to step over them, not stop on them.
+  const collapsed=new Set([3,4,9]);
+  f.window.HTMLElement.prototype.getBoundingClientRect=function(){
+    const index=[...f.document.querySelectorAll('.reading-block')].indexOf(this);
+    if(collapsed.has(index))return{top:0,width:0,height:0};
+    return{top:Math.max(0,index)*200-f.context.scrollY,width:600,height:180};
+  };
+  const expected=y=>{
+    let best=-1,distance=Infinity;
+    for(let i=0;i<anchors.length;i++){
+      if(collapsed.has(i))continue;
+      const d=Math.abs(i*200-y-60);
+      if(d<distance){best=i;distance=d;}
+    }
+    return anchors[best];
+  };
+  const visit=async y=>{
+    f.context.scrollY=y;
+    f.emit('wheel');
+    const saved=f.reader.save();
+    assert.equal(saved.position.anchor,expected(y),`scrollY=${y}`);
+  };
+  for(let y=0;y<=3800;y+=97)await visit(y);       // reading forward
+  for(let y=3800;y>=0;y-=53)await visit(y);       // flicking back up
+  await visit(3600); await visit(120); await visit(2400);  // outline jumps
+  for(const y of [40,240,1440,2440])await visit(y);  // exactly between two blocks: keep the earlier one
+});
+
+test('a measured attachment restores the saved position without waiting for it to decode',async()=>{
+  const body='\n\n'+Array.from({length:20},(_v,i)=>`paragraph ${i}`).join('\n\n');
+  const article=id=>({id,content:'# A\n\n![figure](fig.png)'+body,baseURL:'reader://library/A/a.md',
+    preferences,position:{anchor:'line-6',excerpt:'',offset:0,progress:0.5}});
+  // Without a size the page height is unknown until the file decodes, so the render waits for it.
+  const waiting=fixture();
+  let finished=false;
+  waiting.reader.render({...article('A'),session:'unmeasured'}).then(()=>{finished=true;});
+  await new Promise(resolve=>setTimeout(resolve,300));
+  assert.equal(finished,false);
+  assert.equal(waiting.document.querySelector('img').getAttribute('width'),null);
+
+  const measured=fixture();
+  const started=Date.now();
+  await measured.reader.render({...article('A'),session:'measured',imageSizes:{'fig.png':[800,600]}});
+  assert.ok(Date.now()-started<400,`took ${Date.now()-started}ms`);
+  const image=measured.document.querySelector('img');
+  assert.deepEqual([image.getAttribute('width'),image.getAttribute('height')],['800','600']);
+  assert.equal(measured.messages.at(-1).event,'ready');
+});
+
+test('the MathML twin is only kept rendered while a screen reader is running',async()=>{
+  const f=fixture();
+  await f.reader.render(f.payload('A'));
+  assert.equal(f.document.documentElement.hasAttribute('data-assistive'),false);
+  await f.reader.render({...f.payload('B'),assistive:true});
+  assert.equal(f.document.documentElement.hasAttribute('data-assistive'),true);
+  // Turning VoiceOver off and on again must not need the article to be re-rendered.
+  f.reader.assistive(false);
+  assert.equal(f.document.documentElement.hasAttribute('data-assistive'),false);
+  f.reader.assistive(true);
+  assert.equal(f.document.documentElement.hasAttribute('data-assistive'),true);
+  // The formula source stays in the DOM either way: copying LaTeX and saved excerpts rely on it.
+  const math=renderMarkdown('$$P(A)$$\n');
+  assert.ok(math.html.includes('annotation encoding="application/x-tex"'));
 });

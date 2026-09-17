@@ -29,6 +29,7 @@ struct ReaderView: View {
     @State private var showExport = false
     @State private var editDraft: EditDraft?
     @State private var markdown: String?
+    @State private var imageSizes: [String: [Int]] = [:]
     @State private var loadedRecord: DocumentRecord?
     @State private var loadedSession: String?
     @State private var displayedProgressID: UUID?
@@ -40,6 +41,10 @@ struct ReaderView: View {
     }
     private struct LoadKey: Equatable { var record: DocumentRecord; var root: URL }
     private var hasLoadedDocument: Bool { loadedRecord == document.record }
+    /// The shelf pins its import and notice bar to the bottom safe area. Reading past that inset
+    /// would slide the article under the bar, so the page only fills the home-indicator strip
+    /// while no bar is there.
+    private var shelfBannerShown: Bool { library.isImporting || library.isDeleting || library.notice != nil }
 
     private var preferences: ReaderPreferences { ReaderPreferences(fontSize: fontSize, theme: theme, foldAnswers: foldAnswers) }
     var body: some View {
@@ -66,6 +71,7 @@ struct ReaderView: View {
                 }.padding(12).background(.bar)
             }
             ReaderWebView(controller: controller)
+                .ignoresSafeArea(.container, edges: shelfBannerShown ? [] : .bottom)
                 .opacity(hasLoadedDocument ? 1 : 0)
                 .overlay {
                     if let error = loadingError {
@@ -103,8 +109,12 @@ struct ReaderView: View {
             loadedRecord = nil
             loadingError = nil
             do {
+                // The attachment sizes are read from the file headers while the body loads, so the
+                // first layout already reserves each image's box.
+                async let sizes = library.imageSizes(for: document)
                 let content = try await library.content.markdown(for: document)
                 try Task.checkCancellation()
+                imageSizes = await sizes
                 markdown = content
                 loadedRecord = document.record
                 display(content, preferSavedPosition: library.isRemoteProgress(for: document.id))
@@ -163,7 +173,7 @@ struct ReaderView: View {
     private func display(_ content: String, preferSavedPosition: Bool) {
         displayedProgressID = library.progressUpdate(for: document.id)?.id
         loadedSession = controller.display(document, markdown: content, position: library.position(for: document.id),
-            preferences: preferences, roots: library.roots, preferSavedPosition: preferSavedPosition)
+            preferences: preferences, roots: library.roots, imageSizes: imageSizes, preferSavedPosition: preferSavedPosition)
     }
     private var outlineView: some View {
         VStack(alignment: .leading, spacing: 0) {

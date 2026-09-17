@@ -1,4 +1,7 @@
 import XCTest
+import ImageIO
+import WebKit
+import UniformTypeIdentifiers
 @testable import StudyReader
 
 final class LibraryDiskTests: XCTestCase {
@@ -8,6 +11,66 @@ final class LibraryDiskTests: XCTestCase {
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
     }
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: temp) }
+
+    /// A real PNG, because the size table reads the file header rather than trusting the manifest.
+    private func writePNG(width: Int, height: Int, to url: URL) throws {
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 200, count: bytesPerRow * height)
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+              let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                                  bytesPerRow: bytesPerRow, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent),
+              let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+            throw ReaderFailure(message: "Could not build a test PNG")
+        }
+        pixels.removeAll()
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+    }
+
+    func testAttachmentSizesComeFromTheFilesAndFollowTheContentRevision() async throws {
+        let collection = temp.appendingPathComponent("collection")
+        let assets = collection.appendingPathComponent("资料图")
+        try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+        try writePNG(width: 1200, height: 800, to: assets.appendingPathComponent("图 1.png"))
+        try writePNG(width: 64, height: 64, to: collection.appendingPathComponent("icon.PNG"))
+        try Data("# not an image".utf8).write(to: collection.appendingPathComponent("lesson.md"))
+        try Data([0, 1, 2, 3]).write(to: collection.appendingPathComponent("broken.png"))
+
+        let sizes = LibraryImageSizes()
+        let id = UUID()
+        var table = await sizes.sizes(collection: id, root: collection, revision: 1)
+        XCTAssertEqual(table["资料图/图 1.png".precomposedStringWithCanonicalMapping], [1200, 800])
+        XCTAssertEqual(table["icon.PNG"], [64, 64], "The extension check is case insensitive")
+        XCTAssertNil(table["lesson.md"])
+        XCTAssertNil(table["broken.png"], "A file that is not a decodable image must not claim a box")
+
+        // Replacing the file is only picked up once the library reports new content.
+        try writePNG(width: 300, height: 100, to: assets.appendingPathComponent("图 1.png"))
+        table = await sizes.sizes(collection: id, root: collection, revision: 1)
+        XCTAssertEqual(table["资料图/图 1.png".precomposedStringWithCanonicalMapping], [1200, 800])
+        table = await sizes.sizes(collection: id, root: collection, revision: 2)
+        XCTAssertEqual(table["资料图/图 1.png".precomposedStringWithCanonicalMapping], [300, 100])
+    }
+
+    func testAttachmentSizeKeysMatchTheURLTheReaderResolves() async throws {
+        let source = temp.appendingPathComponent("source")
+        let assets = source.appendingPathComponent("assets")
+        try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+        try writePNG(width: 500, height: 250, to: assets.appendingPathComponent("图.png"))
+        try Data("# 条件概率\n\n![图](assets/图.png)".utf8).write(to: source.appendingPathComponent("lesson.md"))
+        let library = temp.appendingPathComponent("library")
+        guard case .imported(let documents) = try LibraryDisk.importItem(at: source, into: library),
+              let document = documents.first else { return XCTFail("Expected an imported folder") }
+
+        let table = await LibraryImageSizes().sizes(collection: document.collection.id, root: document.rootURL, revision: 0)
+        // What the page asks for: the document's base URL resolved against the Markdown source.
+        let resolved = URL(string: "assets/图.png", relativeTo: URL(string: document.baseURL))!.absoluteString
+        let path = resolved.components(separatedBy: "/").dropFirst(4).joined(separator: "/")
+            .removingPercentEncoding!.precomposedStringWithCanonicalMapping
+        XCTAssertEqual(table[path], [500, 250])
+    }
 
     func testImportPreservesOriginalsAttachmentsAndStableIDs() throws {
         let source = temp.appendingPathComponent("source")
@@ -72,6 +135,55 @@ final class LibraryDiskTests: XCTestCase {
         let document = try XCTUnwrap(try LibraryDisk.loadMetadata(from: library).first)
         XCTAssertEqual(document.title, "文件名")
         XCTAssertEqual(try LibraryDisk.readMarkdown(for: document), input)
+    }
+
+    @MainActor func testSkippingTheMathMLTwinKeepsGeometryFormulaSourceAndFind() async throws {
+        let root = try XCTUnwrap(Bundle.main.resourceURL?.appendingPathComponent("samples"))
+        let relative = "probability/阅读验收样例.md"
+        let content = try String(contentsOf: root.appendingPathComponent(relative), encoding: .utf8)
+        let collection = CollectionManifest(id: UUID(), name: "Test", importedAt: Date(), fingerprint: "test", documents: [])
+        let document = LibraryDocument(record: DocumentRecord(id: UUID(), title: "Sample", relativePath: relative), collection: collection, rootURL: root)
+        let reader = ReaderController()
+        reader.webView.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        reader.display(document, markdown: content, position: nil,
+                       preferences: ReaderPreferences(fontSize: 18, theme: "light", foldAnswers: false),
+                       roots: [collection.id.uuidString: root])
+        for _ in 0..<150 {
+            if !reader.isLoading { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertFalse(reader.isLoading, "Reader did not finish loading bundled resources")
+
+        func height() async throws -> Double {
+            try await reader.webView.evaluateJavaScript("document.documentElement.scrollHeight") as? Double ?? 0
+        }
+        func set(_ assistive: Bool) async throws {
+            _ = try await reader.webView.callAsyncJavaScript("window.Reader.assistive(on); return 1",
+                                                             arguments: ["on": assistive], in: nil, in: .page)
+            try await Task.sleep(for: .milliseconds(120))
+        }
+
+        // The tests run with VoiceOver off, so the twin starts skipped.
+        let skipped = try await height()
+        try await set(true)
+        let rendered = try await height()
+        XCTAssertGreaterThan(skipped, 100)
+        XCTAssertEqual(skipped, rendered, accuracy: 0.5, "The MathML twin holds no space either way")
+
+        // The LaTeX source stays in the DOM whichever way it is rendered, so copying a formula
+        // and matching a saved excerpt keep working.
+        try await set(false)
+        let source = try await reader.webView.evaluateJavaScript(
+            "document.querySelector('annotation[encoding=\"application/x-tex\"]')?.textContent?.length ?? 0") as? Int
+        XCTAssertGreaterThan(source ?? 0, 0)
+
+        // Find still locates ordinary body text with the twin skipped.
+        let found = await withCheckedContinuation { continuation in
+            let configuration = WKFindConfiguration()
+            configuration.wraps = true
+            reader.webView.find("概率", configuration: configuration) { continuation.resume(returning: $0.matchFound) }
+        }
+        XCTAssertTrue(found, "Body text must stay searchable while the MathML twin is skipped")
     }
 
     @MainActor func testBundledWebViewRendersMathAndLocalImage() async throws {

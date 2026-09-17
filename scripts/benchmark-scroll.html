@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>阅读位置记录测量</title>
+<!--
+  测量滚动时记录阅读位置的开销，加载的是已经打包好的 reader.js，不是测试替身。
+
+  在项目根目录运行 `python3 -m http.server 8000`，然后打开
+  http://127.0.0.1:8000/scripts/benchmark-scroll.html?n=320
+  模拟器里用 `xcrun simctl openurl <设备> "<同一地址>"` 打开，得到 WebKit 的数字。
+  对比旧版本：先 `git show <提交>:StudyReader/Resources/Reader/reader.js > /tmp/old.js`，
+  再加 `&src=http://127.0.0.1:8000/old.js`（把该文件放到能被服务到的位置）。
+
+  Safari 把 performance.now() 粗化到 1 ms，所以这里计时整轮扫描，再减去同一轮不记录位置的耗时。
+-->
+<link rel="stylesheet" href="../StudyReader/Resources/Reader/katex.min.css">
+<link rel="stylesheet" href="../StudyReader/Resources/Reader/reader.css">
+<script>
+  const params = new URLSearchParams(location.search);
+  const src = params.get('src') || '../StudyReader/Resources/Reader/reader.js';
+  document.write('<scr' + 'ipt defer src="' + src.replace(/"/g, '') + '"></scr' + 'ipt>');
+</script>
+<style>#out{position:fixed;top:0;left:0;right:0;background:#000;color:#0f0;font:12px/1.5 ui-monospace,monospace;padding:6px;z-index:9;white-space:pre-wrap}</style>
+</head>
+<body><article aria-label="文章正文"></article><div id="out">正在生成…</div>
+<script>
+window.addEventListener('load', async () => {
+  const params = new URLSearchParams(location.search);
+  const sections = Number(params.get('n') || 320);
+  const math = params.get('math') !== '0';
+  let markdown = '# 概率论复习\n\n';
+  for (let i = 0; i < sections; i++) {
+    markdown += `## 第 ${i} 节 随机变量\n\n设 X 服从参数为 λ 的泊松分布，这一段用于把版面撑到真实长度，读起来和平时的笔记差不多长。\n\n`;
+    if (math) markdown += `$$P(X=k)=\\frac{\\lambda^{k}e^{-\\lambda}}{k!},\\quad k=0,1,2,\\dots$$\n\n`;
+    markdown += `- 期望 $E(X)=\\lambda$\n- 方差 $D(X)=\\lambda$\n\n证明中反复使用全概率公式与贝叶斯公式。\n\n### 解答\n\n先写出分布列，再逐项求和。\n\n`;
+  }
+  const started = performance.now();
+  await window.Reader.render({ id: 'bench', content: markdown, baseURL: 'reader://library/bench/a.md',
+    preferences: { fontSize: 18, theme: 'light', foldAnswers: false }, session: 'bench' });
+  const renderMs = performance.now() - started;
+  const blocks = document.querySelectorAll('.reading-block').length;
+  const height = document.documentElement.scrollHeight;
+  // 每 200 ms 记录一次，快速滑动约 6000 px/s，两次记录之间约 1200 px。
+  const spots = [];
+  for (let y = Math.round((height - innerHeight) * 0.15); y < (height - innerHeight) * 0.97; y += 1200) spots.push(y);
+  const sweep = save => {
+    for (const y of spots) {
+      window.scrollTo(0, y);
+      void document.documentElement.offsetHeight; // 先把布局算完，计时只覆盖记录本身
+      if (save) window.Reader.save();
+    }
+  };
+  const round = save => {
+    window.scrollTo(0, spots[0]);
+    void document.documentElement.offsetHeight;
+    const from = performance.now();
+    sweep(save);
+    return (performance.now() - from) / spots.length;
+  };
+  round(true); round(false);
+  const saving = [], plain = [];
+  for (let r = 0; r < 10; r++) { plain.push(round(false)); saving.push(round(true)); }
+  const min = values => Math.min(...values);
+  const median = values => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+  document.getElementById('out').textContent =
+    `脚本 ${src}\n` +
+    `${blocks} 个阅读块，页高 ${height}px，首次排版 ${renderMs.toFixed(0)} ms，${spots.length} 个位置 × 10 轮\n` +
+    `只滚动      最小 ${min(plain).toFixed(3)} / 中位 ${median(plain).toFixed(3)} ms\n` +
+    `滚动并记录  最小 ${min(saving).toFixed(3)} / 中位 ${median(saving).toFixed(3)} ms\n` +
+    `每次记录    最小 ${(min(saving) - min(plain)).toFixed(3)} / 中位 ${(median(saving) - median(plain)).toFixed(3)} ms`;
+});
+</script>
+</body>
+</html>

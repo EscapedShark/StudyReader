@@ -55,6 +55,8 @@ struct LocalReadingState: Codable, Sendable {
     private var isSyncInstalling = false
     private var syncEngine: LibrarySyncEngine?
     private var syncAccess: SyncFolderAccess?
+    private var progressRedraw: DispatchWorkItem?
+    private var lastProgressRedraw = Date.distantPast
     private var syncDebounce: Task<Void, Never>?
     private var syncPoll: Task<Void, Never>?
     private var syncRequested = false
@@ -69,6 +71,7 @@ struct LocalReadingState: Codable, Sendable {
     let libraryURL: URL
     let content = LibraryContent()
     let searchEngine = LibrarySearchEngine()
+    let attachments = LibraryImageSizes()
     private let stateURL: URL
     private let organizationURL: URL
     private var pendingSave: DispatchWorkItem?
@@ -330,6 +333,10 @@ struct LocalReadingState: Codable, Sendable {
         scheduleSync()
     }
 
+    /// Read alongside the body so the first layout already reserves the right box for each image.
+    func imageSizes(for document: LibraryDocument) async -> [String: [Int]] {
+        await attachments.sizes(collection: document.collection.id, root: document.rootURL, revision: contentRevision)
+    }
     func position(for id: UUID) -> ReadingPosition? { state.positions[id.uuidString] }
     func progressUpdate(for id: UUID) -> ReadingProgressUpdate? { state.progressUpdates[id.uuidString] }
     func isRemoteProgress(for id: UUID) -> Bool {
@@ -402,7 +409,7 @@ struct LocalReadingState: Codable, Sendable {
         guard update.isNewer(than: previous) else { return }
         // The shelf only draws a thin progress bar, so redraw when the drawn value moves, not on
         // every scroll tick the reader reports.
-        if drawnProgress(state.positions[key]?.progress) != drawnProgress(position.progress) { objectWillChange.send() }
+        if drawnProgress(state.positions[key]?.progress) != drawnProgress(position.progress) { noteProgressRedraw() }
         state.positions[key] = position
         state.progressUpdates[key] = update
         scheduleSave()
@@ -425,6 +432,23 @@ struct LocalReadingState: Codable, Sendable {
         }
     }
     private func drawnProgress(_ value: Double?) -> Int { Int((min(1, max(0, value ?? 0)) * 200).rounded()) }
+    /// Every notification re-evaluates the whole shelf, including the reader's own toolbar, and
+    /// scrolling produces several a second. A progress bar does not need that rate, so the
+    /// notifications are limited and the last one always lands.
+    private func noteProgressRedraw() {
+        progressRedraw?.cancel()
+        progressRedraw = nil
+        guard Date().timeIntervalSince(lastProgressRedraw) < 0.5 else { sendProgressRedraw(); return }
+        let redraw = DispatchWorkItem { [weak self] in self?.sendProgressRedraw() }
+        progressRedraw = redraw
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: redraw)
+    }
+    private func sendProgressRedraw() {
+        progressRedraw?.cancel()
+        progressRedraw = nil
+        lastProgressRedraw = Date()
+        objectWillChange.send()
+    }
     /// Favorites and reading history feed the filtered list, so its cached answer must be dropped.
     private func invalidateDerivedState() {
         revision &+= 1
@@ -437,19 +461,22 @@ struct LocalReadingState: Codable, Sendable {
         pendingSave = save
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: save)
     }
-    func flush() { writeState(waiting: true) }
-    /// Debounced saves hand the file write to a serial queue so scrolling never waits on the disk;
-    /// `flush` still returns only once the bytes are on their way out in order.
+    func flush() {
+        if progressRedraw != nil { sendProgressRedraw() }
+        writeState(waiting: true)
+    }
+    /// Debounced saves hand both the encoding and the file write to a serial queue, so a library
+    /// with thousands of reading positions never encodes JSON on the main thread while scrolling.
+    /// The queue keeps the snapshots in order; `flush` still returns only once its bytes are out.
     private func writeState(waiting: Bool) {
         pendingSave?.cancel()
         pendingSave = nil
         guard hasLoaded, !isReadOnly else { return }
         let url = stateURL
-        let data: Data
-        do { data = try JSONEncoder().encode(state) }
-        catch { errorMessage = "阅读状态未能保存：\(error.localizedDescription)"; return }
+        // A value copy: the queue encodes exactly this checkpoint even if reading continues.
+        let snapshot = state
         let write: @Sendable () -> Void = { [weak self] in
-            do { try data.write(to: url, options: .atomic) }
+            do { try JSONEncoder().encode(snapshot).write(to: url, options: .atomic) }
             catch {
                 let message = "阅读状态未能保存：\(error.localizedDescription)"
                 Task { @MainActor in self?.errorMessage = message }

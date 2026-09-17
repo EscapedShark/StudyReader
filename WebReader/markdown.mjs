@@ -15,7 +15,18 @@ export function localImageURL(source, baseURL) {
   } catch { return ''; }
 }
 
-let renderer, currentBaseURL = '';
+/// The path an attachment has inside its collection, as the app's size table keys it. Comparing
+/// decoded, precomposed text keeps a Chinese file name matching whatever the file system stored.
+export function attachmentPath(href) {
+  try {
+    const url = new URL(href);
+    if (url.protocol !== 'reader:' || url.hostname !== 'library') return '';
+    return url.pathname.split('/').filter(part => part !== '').slice(1)
+      .map(decodeURIComponent).join('/').normalize('NFC');
+  } catch { return ''; }
+}
+
+let renderer, currentBaseURL = '', currentImageSizes = {};
 
 /// Building the parser and the formula plugin costs more than parsing a short article, so one
 /// instance serves every article. The base URL is swapped per call because rendering is synchronous.
@@ -27,18 +38,27 @@ function markdown() {
   const originalImage = md.renderer.rules.image;
   md.renderer.rules.image = (tokens, idx, options, env, self) => {
     const token = tokens[idx];
-    token.attrSet('src', localImageURL(token.attrGet('src'), currentBaseURL));
+    const href = localImageURL(token.attrGet('src'), currentBaseURL);
+    token.attrSet('src', href);
     token.attrSet('loading', 'eager');
     token.attrSet('decoding', 'async');
+    // Stating the pixel size reserves the box before the file decodes, so the article does not
+    // jump while reading and a saved position needs no wait. An unknown file simply gets no size.
+    const size = currentImageSizes[attachmentPath(href)];
+    if (Array.isArray(size) && size.length === 2 && size[0] > 0 && size[1] > 0) {
+      token.attrSet('width', String(Math.round(size[0])));
+      token.attrSet('height', String(Math.round(size[1])));
+    }
     return originalImage(tokens, idx, options, env, self);
   };
   renderer = md;
   return md;
 }
 
-export function renderMarkdown(source, baseURL = 'reader://library/sample/document.md') {
+export function renderMarkdown(source, baseURL = 'reader://library/sample/document.md', imageSizes = {}) {
   const md = markdown();
   currentBaseURL = baseURL;
+  currentImageSizes = imageSizes || {};
   const tokens = md.parse(stripFrontMatter(source), {});
   const outline = [];
   for (let i = 0; i < tokens.length; i++) {

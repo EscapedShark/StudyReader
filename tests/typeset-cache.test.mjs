@@ -28,3 +28,10 @@ test('cache counts source and outline, respects LRU and rejects changed image ba
   assert.ok(cache.bytes<=500);
   assert.equal(cache.entries.size,1);
 });
+test('a changed attachment size table is not served from the cache', () => {
+  const cache = new TypesetCache();
+  cache.put('a', 's', 'base', result('narrow'), 'fig.png:800,600');
+  assert.equal(cache.get('a', 's', 'base', 'fig.png:1600,900'), null);
+  assert.equal(cache.get('a', 's', 'base'), null);
+  assert.equal(cache.get('a', 's', 'base', 'fig.png:800,600').html, 'narrow');
+});

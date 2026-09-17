@@ -1,6 +1,11 @@
 import SwiftUI
 import WebKit
 import UniformTypeIdentifiers
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 struct OutlineEntry: Identifiable, Decodable {
     let id: String
@@ -113,19 +118,48 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
         proxy.target = self
         webView.navigationDelegate = self
         #if os(iOS)
-        webView.isOpaque = false
-        webView.backgroundColor = .clear
+        // A transparent WebView makes WebKit blend every tile it paints while the article scrolls.
+        // The page fills its own background, so the view stays opaque and only the rubber-band
+        // area beyond the article needs a colour that matches the paper.
         webView.scrollView.contentInsetAdjustmentBehavior = .never
+        applyPaper(for: "system")
         #endif
         #if DEBUG
         webView.isInspectable = true
         #endif
+        observeAssistiveReading()
         webView.load(URLRequest(url: URL(string: "reader://app/index.html")!))
+    }
+
+    /// KaTeX draws every formula twice: the visible spans and an invisible MathML twin that only a
+    /// screen reader uses. Laying the twin out costs about a third of a long article's first
+    /// layout and it occupies no space, so the page skips it while nothing is reading it.
+    private var assistiveReadingActive: Bool {
+        #if os(macOS)
+        return NSWorkspace.shared.isVoiceOverEnabled
+        #else
+        return UIAccessibility.isVoiceOverRunning || UIAccessibility.isSwitchControlRunning
+        #endif
+    }
+    private func observeAssistiveReading() {
+        #if os(iOS)
+        // macOS has no such notification; it is re-read when an article opens and when the app
+        // becomes active, which is soon enough for a setting that is changed by hand.
+        for name in [UIAccessibility.voiceOverStatusDidChangeNotification, UIAccessibility.switchControlStatusDidChangeNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.pushAssistiveReading() }
+            }
+        }
+        #endif
+    }
+    private func pushAssistiveReading() {
+        guard ready, payload != nil else { return }
+        call("window.Reader.assistive(active)", arguments: ["active": assistiveReadingActive])
     }
 
     var currentDocumentID: String? { payload?["id"] as? String }
 
-    @discardableResult func display(_ document: LibraryDocument, markdown: String, position: ReadingPosition?, preferences: ReaderPreferences, roots: [String: URL], preferSavedPosition: Bool = false) -> String {
+    @discardableResult func display(_ document: LibraryDocument, markdown: String, position: ReadingPosition?, preferences: ReaderPreferences, roots: [String: URL], imageSizes: [String: [Int]] = [:], preferSavedPosition: Bool = false) -> String {
         let identifier = document.id.uuidString
         assets.libraryRoots = roots
         let session = UUID().uuidString
@@ -133,6 +167,7 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
         activitySequence[document.id] = 0
         var data: [String: Any] = ["id": identifier, "content": markdown,
                                    "baseURL": document.baseURL, "preferences": preferences.dictionary, "session": session,
+                                   "imageSizes": imageSizes, "assistive": assistiveReadingActive,
                                    "preferSavedPosition": preferSavedPosition]
         if let position, let encoded = try? JSONEncoder().encode(position), let value = try? JSONSerialization.jsonObject(with: encoded) {
             data["position"] = value
@@ -140,6 +175,9 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
         payload = data
         error = nil
         outline = []
+        #if os(iOS)
+        applyPaper(for: preferences.theme)
+        #endif
         if ready { render() }
         return session
     }
@@ -150,8 +188,26 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
     }
     func preferences(_ preferences: ReaderPreferences) {
         payload?["preferences"] = preferences.dictionary
+        #if os(iOS)
+        applyPaper(for: preferences.theme)
+        #endif
         if ready { call("window.Reader.preferences(preferences)", arguments: ["preferences": preferences.dictionary]) }
     }
+    #if os(iOS)
+    /// Mirrors `--paper` in reader.css, including the reader's own light/dark override.
+    private func applyPaper(for theme: String) {
+        let light = UIColor(red: 0.988, green: 0.984, blue: 0.969, alpha: 1)
+        let dark = UIColor(red: 0.114, green: 0.141, blue: 0.137, alpha: 1)
+        let color: UIColor
+        switch theme {
+        case "light": color = light
+        case "dark": color = dark
+        default: color = UIColor { $0.userInterfaceStyle == .dark ? dark : light }
+        }
+        webView.backgroundColor = color
+        webView.scrollView.backgroundColor = color
+    }
+    #endif
     func scroll(to heading: OutlineEntry) {
         call("window.Reader.scrollToHeading(id)", arguments: ["id": heading.id])
     }
@@ -177,6 +233,7 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
     }
     func resumeReading() {
         guard ready, let session = payload?["session"] as? String else { return }
+        pushAssistiveReading()
         call("window.Reader.resume(session)", arguments: ["session": session])
     }
     private func acceptPosition(_ value: Any?, activity: Any?, id: String, session: String) {

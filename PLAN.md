@@ -169,7 +169,7 @@ WebView 在同一窗口内复用，排版缓存最多 12 篇、估算文本容�
 
 已安装 `/Applications/Xcode.app`，版本 Xcode 27.0（27A266a），首次启动检查通过。全局命令行开发目录仍指向 CommandLineTools；构建命令通过 `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` 选择完整 Xcode，没有修改全局配置。
 
-已完成 Mac 与 iOS 模拟器构建，并在 iPhone 18 Pro 模拟器安装运行。JavaScript 的 19 项测试、Mac 上的 87 项 XCTest 及 iPhone 模拟器上的 78 项 XCTest 均通过。覆盖原生文章/资料夹拖放、文件重命名、旧标题及别名迁移、资料夹重命名及状态保留、整组删除与恢复、正文编辑、内容及阅读进度同步，以及栏目切换和重复段落的阅读位置恢复；双端 WebView 测试还检查了样例正文没有横向溢出，详细命令见 README；性能优化与测量结果见 `PERFORMANCE.md`。
+已完成 Mac 与 iOS 模拟器构建，并在 iPhone 18 Pro 模拟器安装运行。JavaScript 的 25 项测试、Mac 上的 90 项 XCTest 及 iPhone 模拟器上的 81 项 XCTest 均通过。覆盖原生文章/资料夹拖放、文件重命名、旧标题及别名迁移、资料夹重命名及状态保留、整组删除与恢复、正文编辑、内容及阅读进度同步，以及栏目切换和重复段落的阅读位置恢复；双端 WebView 测试还检查了样例正文没有横向溢出，详细命令见 README；性能优化与测量结果见 `PERFORMANCE.md`。
 
 Mac 和模拟器的 Debug 构建已配置为本地签名，开启签名后的双端 XCTest 均通过；无需填写 Team 即可在 Xcode 运行。Mac 保持沙盒，已补齐 WebKit 所需的网络客户端权限及导入导出所需的用户选择文件读写权限。
 
