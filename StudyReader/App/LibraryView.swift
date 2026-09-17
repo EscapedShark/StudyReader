@@ -21,6 +21,7 @@ struct LibraryView: View {
     @State private var documentToDelete: LibraryDocument?
     @State private var documentToRename: LibraryDocument?
     @State private var folderToRename: LibraryFolder?
+    @State private var folderToDelete: LibraryFolder?
     @State private var targetedFolderID: UUID?
     #if os(iOS)
     @State private var folderEditMode: EditMode = .inactive
@@ -90,12 +91,22 @@ struct LibraryView: View {
         } message: { document in
             Text("将删除书架中的「\(document.title)」及其收藏、阅读记录。导入前的原始文件不受影响。")
         }
+        .confirmationDialog("删除资料夹？", isPresented: Binding(
+            get: { folderToDelete != nil }, set: { if !$0 { folderToDelete = nil } }
+        ), titleVisibility: .visible, presenting: folderToDelete) { folder in
+            Button(folder.documentIDs.isEmpty ? "删除资料夹" : "删除资料夹及 \(folder.documentIDs.count) 篇文章", role: .destructive) { deleteFolder(folder) }
+                .disabled(!library.canOrganize)
+            Button("取消", role: .cancel) { folderToDelete = nil }
+        } message: { folder in
+            Text("将删除「\(folder.name)」" + (folder.documentIDs.isEmpty ? "这个空资料夹。" : "及其中全部 \(folder.documentIDs.count) 篇文章、收藏和阅读记录。")
+                + "导入前的原始文件不受影响。" + (library.syncConnection == nil ? "" : "删除也会同步到其他设备。"))
+        }
         .alert("操作未完成", isPresented: Binding(get: { library.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil } })) {
             Button("知道了") { library.errorMessage = nil }
         } message: { Text(library.errorMessage ?? "") }
         .safeAreaInset(edge: .bottom) {
             if library.isImporting || library.isDeleting {
-                HStack { ProgressView().controlSize(.small); Text(library.isDeleting ? "正在删除文章…" : "正在导入资料…") }.font(.callout).padding(10).frame(maxWidth: .infinity).background(.bar)
+                HStack { ProgressView().controlSize(.small); Text(library.isDeleting ? "正在删除资料…" : "正在导入资料…") }.font(.callout).padding(10).frame(maxWidth: .infinity).background(.bar)
             } else if let notice = library.notice {
                 HStack { Text(notice); Spacer(); Button("关闭", systemImage: "xmark") { library.notice = nil }.labelStyle(.iconOnly) }
                     .font(.callout).padding(10).background(.bar)
@@ -107,7 +118,10 @@ struct LibraryView: View {
         .onChange(of: filter) { _, _ in updateSelection(reset: false, cancelPending: true) }
         // Comparing the library's revision keeps the check off the article list itself, which the
         // reader would otherwise rebuild on every scroll report.
-        .onChange(of: library.revision) { _, _ in updateSelection(reset: false) }
+        .onChange(of: library.revision) { _, _ in
+            if let filter, UUID(uuidString: filter) != nil, library.folder(matching: filter) == nil { self.filter = "all" }
+            updateSelection(reset: false)
+        }
         .onChange(of: searchModel.resultRevision) { _, _ in updateSelection(reset: false) }
     }
 
@@ -187,6 +201,10 @@ struct LibraryView: View {
                     menu.addItem(LibraryMenuItem("上移", enabled: library.canOrganize && library.collections.first?.id != folder.id) { shiftFolder(folder.id, down: false) })
                     menu.addItem(LibraryMenuItem("下移", enabled: library.canOrganize && library.collections.last?.id != folder.id) { shiftFolder(folder.id, down: true) })
                     menu.addItem(.separator())
+                    let deleteItem = LibraryMenuItem("删除资料夹…", enabled: library.canOrganize) { folderToDelete = folder }
+                    deleteItem.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "删除资料夹")
+                    menu.addItem(deleteItem)
+                    menu.addItem(.separator())
                 }
                 menu.addItem(LibraryMenuItem("新建资料夹…", enabled: library.canOrganize, action: beginNewFolder))
                 return menu
@@ -238,6 +256,9 @@ struct LibraryView: View {
                 .disabled(!library.canOrganize || library.collections.first?.id == folder.id)
             Button("下移", systemImage: "arrow.down") { shiftFolder(folder.id, down: true) }
                 .disabled(!library.canOrganize || library.collections.last?.id == folder.id)
+            Divider()
+            Button("删除资料夹…", systemImage: "trash", role: .destructive) { folderToDelete = folder }
+                .disabled(!library.canOrganize)
         }
     }
 
@@ -483,6 +504,18 @@ struct LibraryView: View {
         Task { @MainActor in
             do { try await library.deleteDocument(id) }
             catch { library.errorMessage = error.localizedDescription }
+        }
+    }
+    private func deleteFolder(_ folder: LibraryFolder) {
+        folderToDelete = nil
+        Task { @MainActor in
+            do {
+                if let selectedID, folder.documentIDs.contains(selectedID) { await reader.prepareToLeave() }
+                try await library.deleteFolder(folder.id, expected: folder)
+            } catch {
+                reader.resumeReading()
+                library.errorMessage = error.localizedDescription
+            }
         }
     }
 }

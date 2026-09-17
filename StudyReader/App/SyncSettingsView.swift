@@ -54,8 +54,8 @@ struct SyncSettingsView: View {
                     Section { Text(error).foregroundStyle(.red).textSelection(.enabled) }
                 }
                 Section("同步内容") {
-                    Label("文章、图片、资料夹和排序", systemImage: "checkmark.circle")
-                    Text("收藏和阅读进度暂时保存在当前设备。")
+                    Label("文章、图片、资料夹、排序和阅读进度", systemImage: "checkmark.circle")
+                    Text("换一台设备，重新打开文章即可接着读。以最后一次实际阅读位置为准，向前翻也会保存。收藏暂时保存在当前设备。")
                         .foregroundStyle(.secondary)
                     Text("打开 App 后自动检查更新。已下载的文章可以离线阅读，离线修改会在恢复连接后继续同步；同时修改同一篇文章时，会保留冲突副本。")
                         .font(.callout).foregroundStyle(.secondary)

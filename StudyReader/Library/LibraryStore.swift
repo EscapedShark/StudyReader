@@ -1,7 +1,10 @@
 import Foundation
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
-struct ReadingPosition: Codable, Sendable {
+struct ReadingPosition: Codable, Equatable, Sendable {
     var anchor: String
     var excerpt: String
     var offset: Double
@@ -12,6 +15,23 @@ struct LocalReadingState: Codable, Sendable {
     var favorites: Set<UUID> = []
     var positions: [String: ReadingPosition] = [:]
     var lastOpened: [String: Date] = [:]
+    var readingDeviceID = UUID()
+    var progressUpdates: [String: ReadingProgressUpdate] = [:]
+
+    init(favorites: Set<UUID> = []) { self.favorites = favorites }
+    private enum CodingKeys: String, CodingKey { case favorites, positions, lastOpened, readingDeviceID, progressUpdates }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        favorites = try values.decodeIfPresent(Set<UUID>.self, forKey: .favorites) ?? []
+        positions = try values.decodeIfPresent([String: ReadingPosition].self, forKey: .positions) ?? [:]
+        lastOpened = try values.decodeIfPresent([String: Date].self, forKey: .lastOpened) ?? [:]
+        readingDeviceID = try values.decodeIfPresent(UUID.self, forKey: .readingDeviceID) ?? UUID()
+        progressUpdates = try values.decodeIfPresent([String: ReadingProgressUpdate].self, forKey: .progressUpdates) ?? [:]
+        // Existing local positions keep their historical time; connecting is not new reading.
+        for (key, position) in positions where progressUpdates[key] == nil {
+            progressUpdates[key] = ReadingProgressUpdate(device: readingDeviceID, updatedAt: lastOpened[key] ?? .distantPast, position: position)
+        }
+    }
 }
 
 @MainActor final class LibraryStore: ObservableObject {
@@ -39,6 +59,12 @@ struct LocalReadingState: Codable, Sendable {
     private var syncPoll: Task<Void, Never>?
     private var syncRequested = false
     private var syncSceneActive = true
+    private var progressObservedAt: [String: Date] = [:]
+    #if os(iOS)
+    private var backgroundSync: Task<Void, Never>?
+    private var backgroundActivity: UIBackgroundTaskIdentifier = .invalid
+    private var backgroundSyncID: UUID?
+    #endif
     private(set) var isReadOnly = false
     let libraryURL: URL
     let content = LibraryContent()
@@ -92,6 +118,7 @@ struct LocalReadingState: Codable, Sendable {
             let root = rootURL
             task = Task.detached(priority: .userInitiated) {
                 try SyncInstaller.recover(in: root)
+                try LibraryFolderDeletion.recover(in: root)
                 var documents = try LibraryDisk.loadMetadata(from: libraryURL)
                 var state = FileManager.default.fileExists(atPath: stateURL.path)
                     ? try JSONDecoder().decode(LocalReadingState.self, from: Data(contentsOf: stateURL)) : LocalReadingState()
@@ -117,6 +144,8 @@ struct LocalReadingState: Codable, Sendable {
             let snapshot = try await task.value
             guard !hasLoaded else { return }
             state = snapshot.state
+            let observedAt = Date()
+            progressObservedAt = state.progressUpdates.mapValues { _ in observedAt }
             documents = snapshot.documents
             organization = snapshot.organization
             contentRevision &+= 1
@@ -257,7 +286,56 @@ struct LocalReadingState: Codable, Sendable {
         scheduleSync()
     }
 
+    func deleteFolder(_ id: UUID, expected: LibraryFolder? = nil) async throws {
+        guard canOrganize else { throw ReaderFailure(message: "资料库正在处理其他操作，请稍后重试。") }
+        guard let folder = folderByFilter[id.uuidString] else { throw ReaderFailure(message: "这个资料夹已不存在。") }
+        guard expected == nil || expected == folder else {
+            throw ReaderFailure(message: "资料夹名称或内容已发生变化，请重新确认后删除。")
+        }
+        let ids = Set(folder.documentIDs)
+        let deleting = documents.filter { ids.contains($0.id) }
+        var updated = organization
+        updated.folders.removeAll { $0.id == id }
+        updated.documentOrder.removeAll { ids.contains($0) }
+        isDeleting = true
+        defer { isDeleting = false }
+        let result: LibraryFolderDeletion.Result
+        let root = rootURL, savedOrganization = updated
+        do {
+            result = try await Task.detached(priority: .userInitiated) {
+                try LibraryFolderDeletion.delete(documents: deleting, organization: savedOrganization, root: root)
+            }.value
+        } catch {
+            if error is LibraryUpdateFailure { isReadOnly = true }
+            throw error
+        }
+        for documentID in ids {
+            state.favorites.remove(documentID)
+            state.positions.removeValue(forKey: documentID.uuidString)
+            state.progressUpdates.removeValue(forKey: documentID.uuidString)
+            state.lastOpened.removeValue(forKey: documentID.uuidString)
+            progressObservedAt.removeValue(forKey: documentID.uuidString)
+        }
+        documents = documents.filter { !ids.contains($0.id) }.map { document in
+            guard let collection = result.collections[document.collection.id] else { return document }
+            return LibraryDocument(record: document.record, collection: collection, rootURL: document.rootURL)
+        }
+        organization = updated
+        if !ids.isEmpty { contentRevision &+= 1 }
+        rebuildIndexes()
+        for documentID in ids { await content.remove(documentID) }
+        flush()
+        notice = "已删除资料夹「\(folder.name)」" + (ids.isEmpty ? "" : "及其中 \(ids.count) 篇文章")
+        if let cleanupError = result.cleanupError { errorMessage = cleanupError }
+        scheduleSync()
+    }
+
     func position(for id: UUID) -> ReadingPosition? { state.positions[id.uuidString] }
+    func progressUpdate(for id: UUID) -> ReadingProgressUpdate? { state.progressUpdates[id.uuidString] }
+    func isRemoteProgress(for id: UUID) -> Bool {
+        guard let update = progressUpdate(for: id) else { return false }
+        return update.device != state.readingDeviceID
+    }
 
     func saveMarkdown(_ markdown: String, for document: LibraryDocument, originalMarkdown: String) async throws {
         try await updateDocument(document) {
@@ -311,14 +389,40 @@ struct LocalReadingState: Codable, Sendable {
         invalidateDerivedState()
         flush()
     }
-    func updatePosition(_ position: ReadingPosition, id: UUID) {
+    func updatePosition(_ position: ReadingPosition, id: UUID, readAt: Date = Date()) {
         guard hasLoaded, !isReadOnly, documentIndex[id] != nil, position.offset.isFinite, position.progress.isFinite else { return }
         let key = id.uuidString
+        guard state.positions[key] != position else { return }
+        let previous = state.progressUpdates[key]
+        // Only an action after observing the current checkpoint can advance its logical time.
+        // An older WebKit callback delayed by cloud installation must keep its original time.
+        let timestamp = readAt >= (progressObservedAt[key] ?? .distantPast)
+            ? max(readAt, (previous?.updatedAt ?? .distantPast).addingTimeInterval(0.000001)) : readAt
+        let update = ReadingProgressUpdate(device: state.readingDeviceID, updatedAt: timestamp, position: position)
+        guard update.isNewer(than: previous) else { return }
         // The shelf only draws a thin progress bar, so redraw when the drawn value moves, not on
         // every scroll tick the reader reports.
         if drawnProgress(state.positions[key]?.progress) != drawnProgress(position.progress) { objectWillChange.send() }
         state.positions[key] = position
+        state.progressUpdates[key] = update
         scheduleSave()
+        scheduleSync(after: 3)
+    }
+
+    private func applyProgress(_ updates: [String: ReadingProgressUpdate]) {
+        let previous = state.progressUpdates
+        ReadingProgressSnapshot.merge(updates, into: &state.progressUpdates)
+        let observedAt = Date()
+        for (key, update) in state.progressUpdates where previous[key] != update { progressObservedAt[key] = observedAt }
+        var positions = state.positions
+        for document in documents {
+            if let update = state.progressUpdates[document.id.uuidString] { positions[document.id.uuidString] = update.position }
+        }
+        if positions != state.positions || previous != state.progressUpdates {
+            objectWillChange.send()
+            state.positions = positions
+            flush()
+        }
     }
     private func drawnProgress(_ value: Double?) -> Int { Int((min(1, max(0, value ?? 0)) * 200).rounded()) }
     /// Favorites and reading history feed the filtered list, so its cached answer must be dropped.
@@ -502,8 +606,47 @@ struct LocalReadingState: Codable, Sendable {
             syncPoll = nil
             syncDebounce?.cancel()
             syncDebounce = nil
+            #if os(iOS)
+            finishSyncInBackground()
+            #endif
         }
     }
+
+    #if os(iOS)
+    /// Give the small progress snapshot a chance to leave the phone when switching apps. The
+    /// local checkpoint is already durable; iOS expiration/offline conditions retry next launch.
+    private func finishSyncInBackground() {
+        guard automaticSync, syncEngine != nil, backgroundSync == nil, UIApplication.shared.applicationState == .background else { return }
+        let id = UUID()
+        backgroundSyncID = id
+        backgroundActivity = UIApplication.shared.beginBackgroundTask(withName: "保存阅读进度") { [weak self] in
+            Task { @MainActor in
+                guard self?.backgroundSyncID == id else { return }
+                self?.backgroundSync?.cancel()
+                self?.endBackgroundSync(id)
+            }
+        }
+        backgroundSync = Task { [weak self] in
+            guard let self else { return }
+            defer { endBackgroundSync(id) }
+            do {
+                while isSyncing { try await Task.sleep(for: .milliseconds(100)) }
+                try Task.checkCancellation()
+                await synchronize()
+            } catch { /* Local progress remains saved for the next foreground sync. */ }
+        }
+    }
+
+    private func endBackgroundSync(_ id: UUID) {
+        guard backgroundSyncID == id else { return }
+        if backgroundActivity != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundActivity)
+            backgroundActivity = .invalid
+        }
+        backgroundSync = nil
+        backgroundSyncID = nil
+    }
+    #endif
 
     private func startSyncPolling() {
         guard automaticSync, syncSceneActive, syncEngine != nil, syncPoll == nil else { return }
@@ -543,9 +686,17 @@ struct LocalReadingState: Codable, Sendable {
             if await engine.needsBootstrap() { _ = try await engine.exchange(with: access.url) }
             guard canOrganize else { syncRequested = true; return }
             isSyncInstalling = true
+            flush()
             try await engine.prepare(documents: documents, organization: organization)
             let capturedRevision = revision
             isSyncInstalling = false
+            var progressExchange: ReadingProgressExchange?
+            var progressError: String?
+            do {
+                progressExchange = try await engine.exchangeProgress(state.progressUpdates, device: state.readingDeviceID,
+                    documentIDs: Set(documents.map(\.id)), folder: access.url)
+                if let progressExchange { applyProgress(progressExchange.updates) }
+            } catch { progressError = error.localizedDescription }
             let exchange = try await engine.exchange(with: access.url)
             guard revision == capturedRevision, canOrganize else { syncRequested = true; return }
             isSyncInstalling = true
@@ -567,8 +718,18 @@ struct LocalReadingState: Codable, Sendable {
                 rebuildIndexes()
                 flush()
             }
+            // Reading metadata can arrive before its article. Keep it until the corresponding
+            // content has downloaded, then make it available on the very first open.
+            applyProgress([:])
             lastSyncCheck = Date()
-            syncStatus = exchange.waitingForUpload ? "等待 iCloud 上传" : "资料库已更新"
+            if let progressError {
+                syncStatus = "资料已更新，进度待同步"
+                syncIssue = "本机阅读进度已保留，将在下次检查时重试。\n\(progressError)"
+            } else if progressExchange?.waitingForDownload == true {
+                syncStatus = "资料已更新，等待下载进度"
+            } else {
+                syncStatus = exchange.waitingForUpload || progressExchange?.waitingForUpload == true ? "等待 iCloud 上传" : "资料与阅读进度已更新"
+            }
         } catch is SyncPending {
             syncStatus = "等待 iCloud 下载"
         } catch is CancellationError {

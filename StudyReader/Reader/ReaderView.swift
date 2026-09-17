@@ -18,6 +18,7 @@ struct ReaderView: View {
     /// Owned by the shelf so switching articles reuses the already-loaded typesetting page.
     @ObservedObject var controller: ReaderController
     @EnvironmentObject private var library: LibraryStore
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("reader.fontSize") private var fontSize = 18.0
     @AppStorage("reader.theme") private var theme = "system"
     @AppStorage("reader.foldAnswers") private var foldAnswers = false
@@ -30,6 +31,7 @@ struct ReaderView: View {
     @State private var markdown: String?
     @State private var loadedRecord: DocumentRecord?
     @State private var loadedSession: String?
+    @State private var displayedProgressID: UUID?
     @State private var loadingError: String?
     private struct EditDraft: Identifiable {
         let id = UUID()
@@ -42,6 +44,18 @@ struct ReaderView: View {
     private var preferences: ReaderPreferences { ReaderPreferences(fontSize: fontSize, theme: theme, foldAnswers: foldAnswers) }
     var body: some View {
         VStack(spacing: 0) {
+            if hasLoadedDocument, library.isRemoteProgress(for: document.id),
+               let update = library.progressUpdate(for: document.id), update.id != displayedProgressID {
+                HStack {
+                    Label("另一台设备更新了阅读位置", systemImage: "icloud")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("接着读") { if let markdown { display(markdown, preferSavedPosition: true) } }
+                        .disabled(controller.isLoading)
+                    Button("忽略", systemImage: "xmark") { displayedProgressID = update.id }
+                        .labelStyle(.iconOnly).buttonStyle(.plain)
+                }.padding(12).background(.bar)
+            }
             if showFind {
                 HStack {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -84,7 +98,7 @@ struct ReaderView: View {
             }
         }
         .task(id: LoadKey(record: document.record, root: document.rootURL)) {
-            controller.onPosition = { id, position in library.updatePosition(position, id: id) }
+            controller.onPosition = { id, position, readAt in library.updatePosition(position, id: id, readAt: readAt) }
             markdown = nil
             loadedRecord = nil
             loadingError = nil
@@ -93,7 +107,7 @@ struct ReaderView: View {
                 try Task.checkCancellation()
                 markdown = content
                 loadedRecord = document.record
-                loadedSession = controller.display(document, markdown: content, position: library.position(for: document.id), preferences: preferences, roots: library.roots)
+                display(content, preferSavedPosition: library.isRemoteProgress(for: document.id))
                 library.opened(document.id)
             } catch is CancellationError {
                 // Another article now owns the shared reader.
@@ -107,6 +121,13 @@ struct ReaderView: View {
         }
         .onDisappear {
             controller.savePosition(for: document.id, session: loadedSession, suspend: true, cachedOnly: true) { library.flush() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { controller.resumeReading() }
+            else {
+                controller.savePosition(for: document.id, session: loadedSession, suspend: phase == .background,
+                    cachedOnly: phase == .background) { library.flush() }
+            }
         }
         .onChange(of: fontSize) { _, _ in controller.preferences(preferences) }
         .onChange(of: theme) { _, _ in controller.preferences(preferences) }
@@ -137,6 +158,12 @@ struct ReaderView: View {
             }.padding(24).frame(minWidth: 280, idealWidth: 500, minHeight: 200, idealHeight: 280)
                 .presentationDetents([.medium])
         }
+    }
+
+    private func display(_ content: String, preferSavedPosition: Bool) {
+        displayedProgressID = library.progressUpdate(for: document.id)?.id
+        loadedSession = controller.display(document, markdown: content, position: library.position(for: document.id),
+            preferences: preferences, roots: library.roots, preferSavedPosition: preferSavedPosition)
     }
     private var outlineView: some View {
         VStack(alignment: .leading, spacing: 0) {

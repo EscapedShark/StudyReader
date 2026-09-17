@@ -94,10 +94,11 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
     let webView: WKWebView
     let assets: ReaderAssets
     /// Carries the article id because a save can land after the reader moved on to the next one.
-    var onPosition: ((UUID, ReadingPosition) -> Void)?
+    var onPosition: ((UUID, ReadingPosition, Date) -> Void)?
     private var ready = false
     private var payload: [String: Any]?
     private var latestSession: [UUID: String] = [:]
+    private var activitySequence: [UUID: Int] = [:]
 
     override init() {
         let configuration = WKWebViewConfiguration()
@@ -124,13 +125,15 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
 
     var currentDocumentID: String? { payload?["id"] as? String }
 
-    @discardableResult func display(_ document: LibraryDocument, markdown: String, position: ReadingPosition?, preferences: ReaderPreferences, roots: [String: URL]) -> String {
+    @discardableResult func display(_ document: LibraryDocument, markdown: String, position: ReadingPosition?, preferences: ReaderPreferences, roots: [String: URL], preferSavedPosition: Bool = false) -> String {
         let identifier = document.id.uuidString
         assets.libraryRoots = roots
         let session = UUID().uuidString
         latestSession[document.id] = session
+        activitySequence[document.id] = 0
         var data: [String: Any] = ["id": identifier, "content": markdown,
-                                   "baseURL": document.baseURL, "preferences": preferences.dictionary, "session": session]
+                                   "baseURL": document.baseURL, "preferences": preferences.dictionary, "session": session,
+                                   "preferSavedPosition": preferSavedPosition]
         if let position, let encoded = try? JSONEncoder().encode(position), let value = try? JSONSerialization.jsonObject(with: encoded) {
             data["position"] = value
         }
@@ -161,7 +164,7 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
                                    arguments: ["session": session, "suspend": suspend, "cachedOnly": cachedOnly], in: nil, in: .page) { [weak self] result in
             if case .success(let value) = result, let value = value as? [String: Any],
                let id = value["documentID"] as? String, let session = value["session"] as? String {
-                self?.acceptPosition(value["position"], id: id, session: session)
+                self?.acceptPosition(value["position"], activity: value["activity"], id: id, session: session)
             }
             // The caller can now change selection or flush the actual captured position.
             completion()
@@ -176,17 +179,29 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
         guard ready, let session = payload?["session"] as? String else { return }
         call("window.Reader.resume(session)", arguments: ["session": session])
     }
-    private func acceptPosition(_ value: Any?, id: String, session: String) {
+    private func acceptPosition(_ value: Any?, activity: Any?, id: String, session: String) {
         guard let documentID = UUID(uuidString: id), latestSession[documentID] == session,
               let value, let data = try? JSONSerialization.data(withJSONObject: value),
-              let position = try? JSONDecoder().decode(ReadingPosition.self, from: data) else { return }
+              (try? JSONDecoder().decode(ReadingPosition.self, from: data)) != nil else { return }
         if id == currentDocumentID { payload?["position"] = value }
-        onPosition?(documentID, position)
+        // WebKit reports the same checkpoint through both the message bridge and save callback.
+        // Restoration, resize, font changes and duplicate callbacks never create a new read time.
+        guard let activity = activity as? [String: Any], let sequence = activity["sequence"] as? Int,
+              sequence > (activitySequence[documentID] ?? 0), let timestamp = activity["readAt"] as? Double, timestamp.isFinite,
+              let position = activity["position"], let data = try? JSONSerialization.data(withJSONObject: position),
+              let readingPosition = try? JSONDecoder().decode(ReadingPosition.self, from: data) else { return }
+        activitySequence[documentID] = sequence
+        onPosition?(documentID, readingPosition, Date(timeIntervalSince1970: timestamp / 1000))
     }
     func find(_ text: String) {
         let config = WKFindConfiguration()
         config.wraps = true
-        webView.find(text, configuration: config) { [weak self] result in self?.findFailed = !text.isEmpty && !result.matchFound }
+        let id = currentDocumentID, session = payload?["session"] as? String
+        webView.find(text, configuration: config) { [weak self] result in
+            guard self?.currentDocumentID == id, self?.payload?["session"] as? String == session else { return }
+            self?.findFailed = !text.isEmpty && !result.matchFound
+            if !text.isEmpty, result.matchFound { self?.call("window.Reader.navigationFinished()") }
+        }
     }
     private func call(_ script: String, arguments: [String: Any] = [:]) {
         let documentID = currentDocumentID
@@ -205,7 +220,7 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
               let session = body["session"] as? String else { return }
         let isCurrent = id == currentDocumentID && session == payload?["session"] as? String
         if event == "position" {
-            acceptPosition(body["payload"], id: id, session: session)
+            acceptPosition(body["payload"], activity: body["activity"], id: id, session: session)
             return
         }
         guard isCurrent else { return }
@@ -241,7 +256,7 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
             UIApplication.shared.open(url)
             #endif
         } else if navigationAction.navigationType == .linkActivated, let fragment = url.fragment, url.host == "app" {
-            call("document.getElementById(id)?.scrollIntoView()", arguments: ["id": fragment])
+            call("window.Reader.scrollToHeading(id)", arguments: ["id": fragment])
         }
         decisionHandler(.cancel)
     }

@@ -12,8 +12,9 @@ const preferences={fontSize:18,theme:'light',foldAnswers:false};
 function fixture() {
   const {document,window}=parseHTML('<html><body><article></article></body></html>');
   const messages=[];
+  const listeners=new Map();
   const context=vm.createContext({document,window:{webkit:{messageHandlers:{reader:{postMessage:message=>messages.push(message)}}}},
-    renderMarkdown,foldAnswers,TypesetCache,addEventListener(){},clearTimeout,
+    renderMarkdown,foldAnswers,TypesetCache,addEventListener:(name,fn)=>listeners.set(name,fn),clearTimeout,
     setTimeout:(fn,delay)=>{const timer=setTimeout(fn,delay);timer.unref();return timer;},
     requestAnimationFrame:fn=>queueMicrotask(fn),NodeFilter:{SHOW_TEXT:4},innerHeight:800,scrollY:0});
   context.scrollTo=(_x,y)=>{context.scrollY=y;};
@@ -26,7 +27,7 @@ function fixture() {
   vm.runInContext(source,context);
   const payload=id=>({id,content:'# '+id+'\n\n'+Array.from({length:20},(_v,i)=>`${id} paragraph ${i}`).join('\n\n'),baseURL:`reader://library/${id}/a.md`,preferences});
   const gate=()=>{let release;document.fonts.ready=new Promise(resolve=>{release=resolve;});return release;};
-  return {context,document,messages,payload,gate,reader:context.window.Reader};
+  return {context,document,messages,payload,gate,reader:context.window.Reader,emit:(name,event={})=>listeners.get(name)?.(event)};
 }
 
 test('a pending preference restore cannot move the next article',async()=>{
@@ -116,4 +117,48 @@ test('repeated study headings restore the original block rather than the first m
   await f.reader.render(f.payload('B'));
   await f.reader.render({...payload,position:saved});
   assert.equal(f.context.scrollY,2800);
+});
+
+test('restoring, passive layout scrolls and font changes never announce reading activity',async()=>{
+  const f=fixture();
+  await f.reader.render({...f.payload('A'),position:{anchor:'line-8',excerpt:'',offset:0,progress:0.4}});
+  assert.equal(f.reader.save().activity,null);
+  f.context.scrollY=600;
+  f.emit('scroll');
+  assert.equal(f.reader.save().activity,null);
+  await f.reader.preferences({...preferences,fontSize:24});
+  assert.equal(f.reader.save().activity,null);
+});
+
+test('user activity is recorded once per movement and a deliberate return to the top supersedes it',async()=>{
+  const f=fixture();
+  await f.reader.render({...f.payload('A'),session:'A-1'});
+  f.emit('wheel');
+  f.context.scrollY=2800;
+  f.emit('scroll');
+  const activity=f.reader.save().activity;
+  assert.ok(activity.position.progress>0.6);
+  assert.equal(f.reader.save().activity,activity,'Repeated saves retain the original action and timestamp');
+  assert.equal(f.reader.save('A-1',true,true).activity,activity);
+  f.reader.resume('A-1');
+  f.emit('keydown',{key:'Home'});
+  f.context.scrollY=0;
+  f.emit('scroll');
+  const top=f.reader.save().activity;
+  assert.ok(top.sequence>activity.sequence);
+  assert.equal(top.position.progress,0);
+  assert.equal(f.reader.save('A-old'),null);
+});
+
+test('an explicitly supplied remote position overrides the same-document WebView cache without echoing',async()=>{
+  const f=fixture();
+  await f.reader.render({...f.payload('A'),session:'A-1'});
+  f.emit('touchmove');
+  f.context.scrollY=2800;
+  f.emit('scroll');
+  f.reader.save('A-1',true);
+  await f.reader.render({...f.payload('A'),session:'A-2',preferSavedPosition:true,
+    position:{anchor:'line-4',excerpt:'',offset:0,progress:0.1}});
+  assert.equal(f.context.scrollY,400);
+  assert.equal(f.reader.save().activity,null);
 });

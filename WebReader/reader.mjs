@@ -6,10 +6,13 @@ let documentID = '', restoring = false, saveTimer, generation = 0;
 let preferencesGeneration = 0;
 let rendering = false;
 let suspended = true, session = '', lastPosition = null, lastCheckpoint = 0;
+let lastActivity = null, activitySequence = 0, intentUntil = 0, pendingUserScroll = false, userScrollAt = 0;
 let blocks = null;
-function post(event, payload) {
-  window.webkit?.messageHandlers?.reader?.postMessage({ event, payload, documentID, session });
+function post(event, payload, extra = {}) {
+  window.webkit?.messageHandlers?.reader?.postMessage({ event, payload, documentID, session, ...extra });
 }
+function readingIntent() { if (!restoring && !suspended) intentUntil = Date.now() + 1500; }
+function clearIntent() { intentUntil = 0; pendingUserScroll = false; }
 // Typesetting formulas dominates opening an article, so the last few stay ready to reuse.
 // The source text is kept as the key so re-imported material is never served from the cache.
 const typesetCache = new TypesetCache();
@@ -87,13 +90,19 @@ function checkpoint(expectedSession, suspend = false, cachedOnly = false) {
   // are not reading activity and must not overwrite a valid position with a near-zero value.
   if (!restoring && !suspended && !cachedOnly && innerHeight > 1 && article.getBoundingClientRect().width > 1) {
     const position = capturePosition();
-    if (position.anchor || position.excerpt) lastPosition = position;
+    if (position.anchor || position.excerpt) {
+      if ((pendingUserScroll || Date.now() <= intentUntil) && JSON.stringify(position) !== JSON.stringify(lastPosition)) {
+        lastActivity = { sequence: ++activitySequence, readAt: pendingUserScroll ? userScrollAt : Date.now(), position };
+      }
+      lastPosition = position;
+    }
+    pendingUserScroll = false;
   }
   if (suspend) { suspended = true; clearTimeout(saveTimer); }
   if (!lastPosition || !documentID) return null;
-  post('position', lastPosition);
+  post('position', lastPosition, { activity: lastActivity });
   lastCheckpoint = Date.now();
-  return { documentID, session, position: lastPosition };
+  return { documentID, session, position: lastPosition, activity: lastActivity };
 }
 function applyPreferences(prefs) {
   document.documentElement.style.setProperty('--reading-size', `${prefs.fontSize || 18}px`);
@@ -112,12 +121,15 @@ window.Reader = {
     // Capture the outgoing document before replacing its DOM. Re-rendering the same article
     // can happen when returning from an empty folder; use the retained position in that case.
     checkpoint();
-    const saved = payload.id === documentID && lastPosition ? lastPosition : payload.position;
+    const saved = !payload.preferSavedPosition && payload.id === documentID && lastPosition ? lastPosition : payload.position;
     const run = ++generation;
     ++preferencesGeneration;
     rendering = true;
     restoring = true;
     clearTimeout(saveTimer);
+    clearIntent();
+    lastActivity = null;
+    activitySequence = 0;
     documentID = payload.id;
     session = payload.session || payload.id;
     suspended = false;
@@ -178,27 +190,47 @@ window.Reader = {
       for (const answer of article.querySelectorAll('details.answer')) answer.open = !prefs.foldAnswers;
       return;
     }
+    checkpoint();
     const position = capturePosition();
+    clearIntent();
     restoring = true;
     applyPreferences(prefs);
     for (const answer of article.querySelectorAll('details.answer')) answer.open = !prefs.foldAnswers;
     await settled();
     if (run !== generation || preferenceRun !== preferencesGeneration) return;
     restorePosition(position);
+    await settled();
+    if (run !== generation || preferenceRun !== preferencesGeneration) return;
     restoring = false;
   },
   scrollToHeading(id) {
     const target = document.getElementById(id);
-    if (target) { target.closest('details')?.setAttribute('open', ''); target.scrollIntoView({ behavior: 'auto', block: 'start' }); }
+    if (target) {
+      readingIntent();
+      target.closest('details')?.setAttribute('open', '');
+      target.scrollIntoView({ behavior: 'auto', block: 'start' });
+      checkpoint();
+    }
   },
+  navigationFinished() { readingIntent(); checkpoint(); },
   save(expectedSession, suspend = false, cachedOnly = false) {
     return checkpoint(expectedSession, suspend, cachedOnly);
   },
-  resume(expectedSession) { if (expectedSession === session) suspended = false; },
+  resume(expectedSession) { if (expectedSession === session) { suspended = false; clearIntent(); } },
 };
+for (const event of ['wheel', 'touchstart', 'touchmove', 'pointerdown']) addEventListener(event, readingIntent, { passive: true });
+addEventListener('keydown', event => {
+  if (!event.target?.closest?.('input,textarea,[contenteditable]') && ['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(event.key)) readingIntent();
+});
+addEventListener('resize', clearIntent);
 addEventListener('scroll', () => {
   clearTimeout(saveTimer);
   if (!restoring && !suspended) {
+    if (Date.now() <= intentUntil) {
+      pendingUserScroll = true;
+      userScrollAt = Date.now();
+      intentUntil = userScrollAt + 500; // retain touch/trackpad momentum until scrolling stops
+    }
     // Keep a recent checkpoint even during continuous scrolling, with bounded UI updates.
     if (Date.now() - lastCheckpoint >= 200) checkpoint();
     saveTimer = setTimeout(() => checkpoint(), 250);

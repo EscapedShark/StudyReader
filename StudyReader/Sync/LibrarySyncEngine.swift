@@ -34,6 +34,15 @@ actor LibrarySyncEngine {
     }
 
     func needsBootstrap() -> Bool { !cache.didCaptureLocal }
+
+    func exchangeProgress(_ updates: [String: ReadingProgressUpdate], device: UUID, documentIDs: Set<UUID>, folder: URL) throws -> ReadingProgressExchange {
+        let local = updates.filter { key, _ in UUID(uuidString: key).map { documentIDs.contains($0) } ?? false }
+        let snapshot = ReadingProgressSnapshot(library: cache.libraryID, device: device,
+            updates: ReadingProgressSnapshot.remap(local, aliases: cache.aliases))
+        var result = try ReadingProgressSync.exchange(snapshot, in: folder)
+        result.updates = ReadingProgressSnapshot.remap(result.updates, aliases: cache.aliases)
+        return result
+    }
     private func persist() throws { try SyncFolderIO.encoder.encode(cache).write(to: stateURL, options: .atomic) }
 
     private func cacheBlob(_ data: Data, extension ext: String) throws -> String {
@@ -138,6 +147,8 @@ actor LibrarySyncEngine {
         }
         let baselineOrganization = !next.didCaptureLocal ? existingProjection.organization : next.baseline.organization
         let oldFolders = Dictionary(uniqueKeysWithValues: baselineOrganization.folders.map { ($0.id, $0) })
+        let removedFolders = Set(oldFolders.keys).subtracting(effectiveOrganization.folders.map(\.id))
+        if !removedFolders.isEmpty { event.deletedFolders = removedFolders.sorted { $0.uuidString < $1.uuidString } }
         let oldMemberships = Dictionary(baselineOrganization.folders.flatMap { folder in folder.documentIDs.map { ($0, folder.id) } }, uniquingKeysWith: { first, _ in first })
         for folder in effectiveOrganization.folders {
             if oldFolders[folder.id]?.name != folder.name { event.folderNames[folder.id.uuidString] = folder.name }
@@ -150,7 +161,7 @@ actor LibrarySyncEngine {
         next.baseline.organization = organization
         next.didCaptureLocal = true
         let hasChanges = !event.articles.isEmpty || !event.folderNames.isEmpty || !event.memberships.isEmpty ||
-            !event.folderOrders.isEmpty || event.folderOrder != nil || event.documentOrder != nil
+            !event.folderOrders.isEmpty || event.folderOrder != nil || event.documentOrder != nil || event.deletedFolders != nil
         if hasChanges {
             // Bound individual journal files. Large imports with many shared images must not
             // produce a single record that the receiving device's size limit rejects.

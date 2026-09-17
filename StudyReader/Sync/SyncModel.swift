@@ -41,6 +41,8 @@ struct SyncEvent: Codable, Equatable, Sendable {
     var folderOrders: [String: [UUID]] = [:]
     var folderOrder: [UUID]?
     var documentOrder: [UUID]?
+    /// Folder identities are never reused. A stale offline rename cannot resurrect a deletion.
+    var deletedFolders: [UUID]?
 
     static func precedes(_ lhs: Self, _ rhs: Self) -> Bool {
         if lhs.clock != rhs.clock { return lhs.clock < rhs.clock }
@@ -141,7 +143,9 @@ enum SyncModel {
             }
         }
         guard event.memberships.keys.allSatisfy({ UUID(uuidString: $0) != nil }),
-              event.folderOrders.keys.allSatisfy({ UUID(uuidString: $0) != nil }) else {
+              event.folderOrders.keys.allSatisfy({ UUID(uuidString: $0) != nil }),
+              (event.deletedFolders?.count ?? 0) <= 100_000,
+              Set(event.deletedFolders ?? []).count == (event.deletedFolders?.count ?? 0) else {
             throw ReaderFailure(message: "同步整理记录无效。")
         }
     }
@@ -160,7 +164,9 @@ enum SyncModel {
         var names: [String: String] = [:], memberships: [String: UUID] = [:]
         var folderOrders: [String: [UUID]] = [:]
         var folderOrder: [UUID] = [], documentOrder: [UUID] = []
+        var deletedFolders = Set<UUID>()
         for event in ordered {
+            deletedFolders.formUnion(event.deletedFolders ?? [])
             names.merge(event.folderNames) { _, new in new }
             memberships.merge(event.memberships) { _, new in new }
             folderOrders.merge(event.folderOrders) { _, new in new }
@@ -232,6 +238,7 @@ enum SyncModel {
             }
         }
         let docIDs = Set(articles.keys)
+        for id in deletedFolders { names.removeValue(forKey: id.uuidString) }
         func orderedIDs(_ preferred: [UUID], among valid: Set<UUID>) -> [UUID] {
             var seen = Set<UUID>()
             return preferred.filter { valid.contains($0) && seen.insert($0).inserted }
@@ -239,8 +246,13 @@ enum SyncModel {
         }
         // All document creates carry a folder name, but old/partial independent metadata may
         // arrive later. Keep a deterministic fallback instead of dropping the article.
+        var fallbackFolder = stableID("unfiled"), fallbackIndex = 0
+        while deletedFolders.contains(fallbackFolder) {
+            fallbackIndex += 1
+            fallbackFolder = stableID("unfiled:\(fallbackIndex)")
+        }
         for id in docIDs where memberships[id.uuidString] == nil || names[memberships[id.uuidString]!.uuidString] == nil {
-            let folder = stableID("unfiled")
+            let folder = fallbackFolder
             names[folder.uuidString] = "未分类资料"
             memberships[id.uuidString] = folder
         }

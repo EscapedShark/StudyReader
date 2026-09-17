@@ -344,7 +344,9 @@ final class LibrarySyncTests: XCTestCase {
         let newID = try XCTUnwrap(a.documents.first { $0.title == "第一课" }?.id)
         XCTAssertTrue(b.isFavorite(newID))
         XCTAssertEqual(b.position(for: newID)?.progress, 0.72)
-        XCTAssertNil(a.position(for: newID), "This phase must not upload local reading state")
+        await a.synchronize()
+        XCTAssertEqual(a.position(for: newID)?.progress, 0.72, "Progress follows the canonical article ID after merging identical imports")
+        XCTAssertFalse(a.isFavorite(newID), "Favorites remain local")
         let backups = try FileManager.default.contentsOfDirectory(at: bRoot.appendingPathComponent("Backups"), includingPropertiesForKeys: nil)
         XCTAssertEqual(backups.count, 1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: backups[0].appendingPathComponent("reading-state.json").path))
@@ -399,5 +401,65 @@ final class LibrarySyncTests: XCTestCase {
         let link = cloud.appendingPathComponent("linked")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: occupied)
         XCTAssertThrowsError(try SyncFolderIO.child("linked/keep.md", in: cloud))
+    }
+
+    @MainActor func testWholeAndEmptyFolderDeletionsSyncAndDoNotResurrectAfterOfflineRename() async throws {
+        let a = LibraryStore(rootURL: temp.appendingPathComponent("StoreA"), seedSamples: false, automaticSync: false)
+        let b = LibraryStore(rootURL: temp.appendingPathComponent("StoreB"), seedSamples: false, automaticSync: false)
+        defer { a.disconnectSyncFolder(); b.disconnectSyncFolder() }
+        await a.importItems([try source()])
+        let folder = try XCTUnwrap(a.collections.first?.id)
+        let empty = try a.createFolder(named: "空资料夹")
+        await a.connectSyncFolder(cloud, create: false)
+        await b.connectSyncFolder(cloud, create: false)
+        try b.renameFolder(folder, to: "离线改名")
+        try b.renameFolder(empty, to: "离线空资料夹改名")
+        try await a.deleteFolder(folder)
+        try await a.deleteFolder(empty)
+        await a.synchronize()
+        await b.synchronize()
+        await a.synchronize()
+        XCTAssertNil(a.syncIssue)
+        XCTAssertNil(b.syncIssue)
+        for store in [a, b] {
+            XCTAssertTrue(store.documents.isEmpty)
+            XCTAssertNil(store.folder(matching: folder.uuidString))
+            XCTAssertNil(store.folder(matching: empty.uuidString))
+        }
+        let reopened = LibraryStore(rootURL: temp.appendingPathComponent("StoreB"), seedSamples: false, automaticSync: false)
+        await reopened.loadIfNeeded()
+        await reopened.synchronize()
+        XCTAssertTrue(reopened.documents.isEmpty)
+        XCTAssertTrue(reopened.collections.isEmpty)
+        reopened.disconnectSyncFolder()
+    }
+
+    @MainActor func testFolderDeletionPreservesUnseenOfflineImportAndEditWithoutRestoringFolder() async throws {
+        let a = LibraryStore(rootURL: temp.appendingPathComponent("StoreA"), seedSamples: false, automaticSync: false)
+        let b = LibraryStore(rootURL: temp.appendingPathComponent("StoreB"), seedSamples: false, automaticSync: false)
+        defer { a.disconnectSyncFolder(); b.disconnectSyncFolder() }
+        await a.importItems([try source()])
+        let folder = try XCTUnwrap(a.collections.first?.id)
+        await a.connectSyncFolder(cloud, create: false)
+        await b.connectSyncFolder(cloud, create: false)
+        let document = try XCTUnwrap(b.documents.first)
+        try await b.saveMarkdown("# 离线写下的新内容", for: document, originalMarkdown: LibraryDisk.readMarkdown(for: document))
+        let newSource = temp.appendingPathComponent("新增.md")
+        try Data("# 离线新增文章".utf8).write(to: newSource)
+        await b.importItems([newSource], intoFolderID: folder)
+        try await a.deleteFolder(folder)
+        await a.synchronize()
+        await b.synchronize()
+        await a.synchronize()
+        XCTAssertNil(a.syncIssue)
+        XCTAssertNil(b.syncIssue)
+        XCTAssertNil(a.folder(matching: folder.uuidString))
+        XCTAssertNil(b.folder(matching: folder.uuidString))
+        XCTAssertEqual(a.documents.count, 2)
+        XCTAssertEqual(Set(a.documents.map(\.id)), Set(b.documents.map(\.id)))
+        let bodies = try a.documents.map { try LibraryDisk.readMarkdown(for: $0) }
+        XCTAssertTrue(bodies.contains("# 离线写下的新内容"))
+        XCTAssertTrue(bodies.contains("# 离线新增文章"))
+        XCTAssertTrue(a.collections.contains { $0.name == "未分类资料" })
     }
 }
