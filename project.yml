@@ -1,0 +1,71 @@
+name: StudyReader
+options:
+  minimumXcodeGenVersion: 2.46.0
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+  createIntermediateGroups: true
+  developmentLanguage: zh-Hans
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: 1
+    CODE_SIGN_STYLE: Automatic
+settingGroups:
+  localDebugSigning:
+    configs:
+      Debug:
+        # Local runs need no team; physical iPhones keep automatic signing.
+        "CODE_SIGN_STYLE[sdk=macosx*]": Manual
+        "CODE_SIGN_IDENTITY[sdk=macosx*]": "-"
+        "CODE_SIGN_STYLE[sdk=iphonesimulator*]": Manual
+        "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]": "-"
+targets:
+  StudyReader:
+    type: application
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - path: StudyReader
+        excludes: [Resources, StudyReader.entitlements]
+      - path: StudyReader/Resources/Reader
+        type: folder
+        buildPhase: resources
+      - path: samples
+        type: folder
+        buildPhase: resources
+    settings:
+      groups: [localDebugSigning]
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.personal.studyreader
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: 学习书架
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.education
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        SUPPORTS_MACCATALYST: NO
+        ENABLE_APP_SANDBOX: YES
+        ENABLE_USER_SELECTED_FILES: readwrite
+        ENABLE_OUTGOING_NETWORK_CONNECTIONS: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: StudyReader/StudyReader.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+    scheme:
+      testTargets: [StudyReaderTests]
+  StudyReaderTests:
+    type: bundle.unit-test
+    supportedDestinations: [iOS, macOS]
+    sources: [tests/Swift]
+    dependencies:
+      - target: StudyReader
+    settings:
+      groups: [localDebugSigning]
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.personal.studyreader.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/StudyReader.app/StudyReader"
+        "TEST_HOST[sdk=macosx*]": "$(BUILT_PRODUCTS_DIR)/StudyReader.app/Contents/MacOS/StudyReader"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+fileGroups: [PLAN.md, README.md, WebReader, scripts, package.json]

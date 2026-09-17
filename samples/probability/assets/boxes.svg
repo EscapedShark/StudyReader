@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="204" viewBox="0 0 660 204" role="img" aria-labelledby="title desc">
+  <title id="title">抽球示意</title>
+  <desc id="desc">甲盒有三个红球和一个蓝球；乙盒有一个红球和三个蓝球。选择每个盒子的概率都是二分之一。</desc>
+  <style>
+    :root { color-scheme:light dark; }
+    text { fill:light-dark(#293d35,#e0e8e1); font-family:system-ui,sans-serif; font-size:16px; }
+    .box { fill:light-dark(#eff3ec,#303d35); stroke:light-dark(#c9d4c6,#526659); stroke-width:1.5; }
+    .red { fill:#c96655; } .blue { fill:#507e9c; }
+    .label { fill:white; font-size:12px; }
+  </style>
+  <rect class="box" x="16" y="44" width="296" height="112" rx="16"/>
+  <rect class="box" x="348" y="44" width="296" height="112" rx="16"/>
+  <text x="164" y="27" text-anchor="middle">甲盒 · 选择概率 1/2</text>
+  <text x="496" y="27" text-anchor="middle">乙盒 · 选择概率 1/2</text>
+  <g text-anchor="middle">
+    <circle class="red" cx="62" cy="100" r="24"/><text class="label" x="62" y="105">红</text>
+    <circle class="red" cx="130" cy="100" r="24"/><text class="label" x="130" y="105">红</text>
+    <circle class="red" cx="198" cy="100" r="24"/><text class="label" x="198" y="105">红</text>
+    <circle class="blue" cx="266" cy="100" r="24"/><text class="label" x="266" y="105">蓝</text>
+    <circle class="red" cx="394" cy="100" r="24"/><text class="label" x="394" y="105">红</text>
+    <circle class="blue" cx="462" cy="100" r="24"/><text class="label" x="462" y="105">蓝</text>
+    <circle class="blue" cx="530" cy="100" r="24"/><text class="label" x="530" y="105">蓝</text>
+    <circle class="blue" cx="598" cy="100" r="24"/><text class="label" x="598" y="105">蓝</text>
+    <text x="164" y="188">抽到红球的概率：3/4</text>
+    <text x="496" y="188">抽到红球的概率：1/4</text>
+  </g>
+</svg>

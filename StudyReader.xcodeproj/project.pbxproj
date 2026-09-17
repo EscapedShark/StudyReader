@@ -1,0 +1,572 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		3141D20870507C801C82517C /* samples in Resources */ = {isa = PBXBuildFile; fileRef = 155236011299D070DFBBFA64 /* samples */; };
+		450AA8776B86804CCB080CC6 /* DocumentDrag.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1C77800FCC4FA2047115ED6 /* DocumentDrag.swift */; };
+		461FFE008EBC24C3D10DC225 /* ReaderController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7060D1A08A322AF62C3CC56D /* ReaderController.swift */; };
+		46C3C12CBAC46DF891818D0E /* Reader in Resources */ = {isa = PBXBuildFile; fileRef = 9F561E7015BA42572C25018E /* Reader */; };
+		4952EAE2D241E10286B7ACCC /* LibraryOrganization.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE07220019FA00542F84626D /* LibraryOrganization.swift */; };
+		671F2788B6129565720E18E5 /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C8E72DF71B25B1E8B1AC3FA /* ReaderView.swift */; };
+		71DD11F8E29F6F5896919D1D /* StudyReaderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1DA235A4A2512C5E3B6D6D0 /* StudyReaderApp.swift */; };
+		773E1962A71301BC9A898E38 /* LibraryDisk.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54898C4CB1F3A358A9B4530D /* LibraryDisk.swift */; };
+		7D11DC86CA98DDCD658343D9 /* LibraryOrganizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B4F9ED818BC7F09663998FE /* LibraryOrganizationTests.swift */; };
+		CBB3379B2DF0FC62E16B27BB /* LibraryDiskTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCA5E885CE305947AA6FC6FA /* LibraryDiskTests.swift */; };
+		D2466684FB068E39AB8DB03A /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C29BBAD8EB9662C54AD6C348 /* LibraryView.swift */; };
+		E84AF899151E4628CDBFC35E /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32F113AACDE5BDCD5ABC2B26 /* LibraryStore.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		980A6D2F99D918D6F83867D8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 30EC91118A8E7AE0CA0AFF85 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 2C5BEDD8E77E1F824194C45A;
+			remoteInfo = StudyReader;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		0CF5414832FEBA581C58270D /* markdown.mjs */ = {isa = PBXFileReference; path = markdown.mjs; sourceTree = "<group>"; };
+		14A6DEBBD3ACA1FEF76A0C34 /* index.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = index.html; sourceTree = "<group>"; };
+		155236011299D070DFBBFA64 /* samples */ = {isa = PBXFileReference; lastKnownFileType = folder; path = samples; sourceTree = SOURCE_ROOT; };
+		1AA65B20A85D41400F506312 /* StudyReader.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = StudyReader.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1C8E72DF71B25B1E8B1AC3FA /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
+		2B4F9ED818BC7F09663998FE /* LibraryOrganizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryOrganizationTests.swift; sourceTree = "<group>"; };
+		2D5A51F434371C122EB9BA53 /* StudyReaderTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StudyReaderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		32F113AACDE5BDCD5ABC2B26 /* LibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStore.swift; sourceTree = "<group>"; };
+		52A6F5F0C54F1E0A31553F7C /* build-reader.mjs */ = {isa = PBXFileReference; path = "build-reader.mjs"; sourceTree = "<group>"; };
+		54898C4CB1F3A358A9B4530D /* LibraryDisk.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryDisk.swift; sourceTree = "<group>"; };
+		5814D27F5EB33859BB315340 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		670F5999619D373447D4CB81 /* package.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = package.json; sourceTree = "<group>"; };
+		7060D1A08A322AF62C3CC56D /* ReaderController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderController.swift; sourceTree = "<group>"; };
+		843C45A0CED17ECA5A5D3314 /* reader.css */ = {isa = PBXFileReference; lastKnownFileType = text.css; path = reader.css; sourceTree = "<group>"; };
+		9AFAF7B34C8EFFD079054F8C /* KaTeX-fonts.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "KaTeX-fonts.txt"; sourceTree = "<group>"; };
+		9F561E7015BA42572C25018E /* Reader */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Reader; path = StudyReader/Resources/Reader; sourceTree = SOURCE_ROOT; };
+		A1A0046102294315AFFA1073 /* PLAN.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = PLAN.md; sourceTree = "<group>"; };
+		A68D6F286CB9385E98D90B2A /* reader.mjs */ = {isa = PBXFileReference; path = reader.mjs; sourceTree = "<group>"; };
+		AE07220019FA00542F84626D /* LibraryOrganization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryOrganization.swift; sourceTree = "<group>"; };
+		BCA5E885CE305947AA6FC6FA /* LibraryDiskTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryDiskTests.swift; sourceTree = "<group>"; };
+		C1C77800FCC4FA2047115ED6 /* DocumentDrag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentDrag.swift; sourceTree = "<group>"; };
+		C1DA235A4A2512C5E3B6D6D0 /* StudyReaderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyReaderApp.swift; sourceTree = "<group>"; };
+		C29BBAD8EB9662C54AD6C348 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		4C90759C0A9FE0037035F0AE /* App */ = {
+			isa = PBXGroup;
+			children = (
+				C1C77800FCC4FA2047115ED6 /* DocumentDrag.swift */,
+				C29BBAD8EB9662C54AD6C348 /* LibraryView.swift */,
+				C1DA235A4A2512C5E3B6D6D0 /* StudyReaderApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		51983BC3F9D7A9055FABC49D /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				9F561E7015BA42572C25018E /* Reader */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		68456B20AE9904A98C1FB42F /* licenses */ = {
+			isa = PBXGroup;
+			children = (
+				9AFAF7B34C8EFFD079054F8C /* KaTeX-fonts.txt */,
+			);
+			path = licenses;
+			sourceTree = "<group>";
+		};
+		6A6487E320468A1FAB5EDA9B /* Swift */ = {
+			isa = PBXGroup;
+			children = (
+				BCA5E885CE305947AA6FC6FA /* LibraryDiskTests.swift */,
+				2B4F9ED818BC7F09663998FE /* LibraryOrganizationTests.swift */,
+			);
+			path = Swift;
+			sourceTree = "<group>";
+		};
+		92A1BB898C38B64957B1FC4C /* scripts */ = {
+			isa = PBXGroup;
+			children = (
+				52A6F5F0C54F1E0A31553F7C /* build-reader.mjs */,
+			);
+			path = scripts;
+			sourceTree = "<group>";
+		};
+		9DAA787112DB8273D19EFB77 /* Reader */ = {
+			isa = PBXGroup;
+			children = (
+				7060D1A08A322AF62C3CC56D /* ReaderController.swift */,
+				1C8E72DF71B25B1E8B1AC3FA /* ReaderView.swift */,
+			);
+			path = Reader;
+			sourceTree = "<group>";
+		};
+		9EE13389C25742E812BDC9A7 /* WebReader */ = {
+			isa = PBXGroup;
+			children = (
+				14A6DEBBD3ACA1FEF76A0C34 /* index.html */,
+				0CF5414832FEBA581C58270D /* markdown.mjs */,
+				843C45A0CED17ECA5A5D3314 /* reader.css */,
+				A68D6F286CB9385E98D90B2A /* reader.mjs */,
+				68456B20AE9904A98C1FB42F /* licenses */,
+			);
+			path = WebReader;
+			sourceTree = "<group>";
+		};
+		A92D3CA8B13395207A4904D3 /* StudyReader */ = {
+			isa = PBXGroup;
+			children = (
+				4C90759C0A9FE0037035F0AE /* App */,
+				AB9F32E2F9CB6D2A06B88E4A /* Library */,
+				9DAA787112DB8273D19EFB77 /* Reader */,
+				51983BC3F9D7A9055FABC49D /* Resources */,
+			);
+			path = StudyReader;
+			sourceTree = "<group>";
+		};
+		AB9F32E2F9CB6D2A06B88E4A /* Library */ = {
+			isa = PBXGroup;
+			children = (
+				54898C4CB1F3A358A9B4530D /* LibraryDisk.swift */,
+				AE07220019FA00542F84626D /* LibraryOrganization.swift */,
+				32F113AACDE5BDCD5ABC2B26 /* LibraryStore.swift */,
+			);
+			path = Library;
+			sourceTree = "<group>";
+		};
+		CFD7AC363EA49BD8EB000F37 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				1AA65B20A85D41400F506312 /* StudyReader.app */,
+				2D5A51F434371C122EB9BA53 /* StudyReaderTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		EC04F3998D09633716EF3DFE /* tests */ = {
+			isa = PBXGroup;
+			children = (
+				6A6487E320468A1FAB5EDA9B /* Swift */,
+			);
+			path = tests;
+			sourceTree = "<group>";
+		};
+		F95CABAD2C1E35EFFBF2657A = {
+			isa = PBXGroup;
+			children = (
+				670F5999619D373447D4CB81 /* package.json */,
+				A1A0046102294315AFFA1073 /* PLAN.md */,
+				5814D27F5EB33859BB315340 /* README.md */,
+				155236011299D070DFBBFA64 /* samples */,
+				92A1BB898C38B64957B1FC4C /* scripts */,
+				A92D3CA8B13395207A4904D3 /* StudyReader */,
+				EC04F3998D09633716EF3DFE /* tests */,
+				9EE13389C25742E812BDC9A7 /* WebReader */,
+				CFD7AC363EA49BD8EB000F37 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0EDA16CA332185899A705E79 /* StudyReaderTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 580CC947E45AD6C8D42BBC4E /* Build configuration list for PBXNativeTarget "StudyReaderTests" */;
+			buildPhases = (
+				995188E6139406BB1CE70EFD /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				DBFA988B47BA7164285E7B22 /* PBXTargetDependency */,
+			);
+			name = StudyReaderTests;
+			packageProductDependencies = (
+			);
+			productName = StudyReaderTests;
+			productReference = 2D5A51F434371C122EB9BA53 /* StudyReaderTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		2C5BEDD8E77E1F824194C45A /* StudyReader */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0D15F15A04D2240432DF3F9B /* Build configuration list for PBXNativeTarget "StudyReader" */;
+			buildPhases = (
+				BC1CC83ECD2CD57E6D9175F5 /* Sources */,
+				F31ECC31CD4702F0BA64F019 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = StudyReader;
+			packageProductDependencies = (
+			);
+			productName = StudyReader;
+			productReference = 1AA65B20A85D41400F506312 /* StudyReader.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		30EC91118A8E7AE0CA0AFF85 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					0EDA16CA332185899A705E79 = {
+						ProvisioningStyle = Automatic;
+					};
+					2C5BEDD8E77E1F824194C45A = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 8CA3D8F5487BAB09B960B403 /* Build configuration list for PBXProject "StudyReader" */;
+			developmentRegion = "zh-Hans";
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				"zh-Hans",
+			);
+			mainGroup = F95CABAD2C1E35EFFBF2657A;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = CFD7AC363EA49BD8EB000F37 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				2C5BEDD8E77E1F824194C45A /* StudyReader */,
+				0EDA16CA332185899A705E79 /* StudyReaderTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F31ECC31CD4702F0BA64F019 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				46C3C12CBAC46DF891818D0E /* Reader in Resources */,
+				3141D20870507C801C82517C /* samples in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		995188E6139406BB1CE70EFD /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CBB3379B2DF0FC62E16B27BB /* LibraryDiskTests.swift in Sources */,
+				7D11DC86CA98DDCD658343D9 /* LibraryOrganizationTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BC1CC83ECD2CD57E6D9175F5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				450AA8776B86804CCB080CC6 /* DocumentDrag.swift in Sources */,
+				773E1962A71301BC9A898E38 /* LibraryDisk.swift in Sources */,
+				4952EAE2D241E10286B7ACCC /* LibraryOrganization.swift in Sources */,
+				E84AF899151E4628CDBFC35E /* LibraryStore.swift in Sources */,
+				D2466684FB068E39AB8DB03A /* LibraryView.swift in Sources */,
+				461FFE008EBC24C3D10DC225 /* ReaderController.swift in Sources */,
+				671F2788B6129565720E18E5 /* ReaderView.swift in Sources */,
+				71DD11F8E29F6F5896919D1D /* StudyReaderApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		DBFA988B47BA7164285E7B22 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 2C5BEDD8E77E1F824194C45A /* StudyReader */;
+			targetProxy = 980A6D2F99D918D6F83867D8 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		024139CD9D1493486A18B184 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		0BE7988CAC3297E631E8E979 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = StudyReader/StudyReader.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_USER_SELECTED_FILES = readwrite;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "学习书架";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.personal.studyreader;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		67DC11607DEE07F5EB47EB32 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.personal.studyreader.tests;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StudyReader.app/StudyReader";
+				"TEST_HOST[sdk=macosx*]" = "$(BUILT_PRODUCTS_DIR)/StudyReader.app/Contents/MacOS/StudyReader";
+			};
+			name = Release;
+		};
+		925E4A385453F6E4DC36D532 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = StudyReader/StudyReader.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				"CODE_SIGN_STYLE[sdk=iphonesimulator*]" = Manual;
+				"CODE_SIGN_STYLE[sdk=macosx*]" = Manual;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_USER_SELECTED_FILES = readwrite;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "学习书架";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.personal.studyreader;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B0D7CFA415662D55A255CFE6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				"CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				"CODE_SIGN_STYLE[sdk=iphonesimulator*]" = Manual;
+				"CODE_SIGN_STYLE[sdk=macosx*]" = Manual;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.personal.studyreader.tests;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StudyReader.app/StudyReader";
+				"TEST_HOST[sdk=macosx*]" = "$(BUILT_PRODUCTS_DIR)/StudyReader.app/Contents/MacOS/StudyReader";
+			};
+			name = Debug;
+		};
+		F7C84F5AFA35812B9AAAADFE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0D15F15A04D2240432DF3F9B /* Build configuration list for PBXNativeTarget "StudyReader" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				925E4A385453F6E4DC36D532 /* Debug */,
+				0BE7988CAC3297E631E8E979 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		580CC947E45AD6C8D42BBC4E /* Build configuration list for PBXNativeTarget "StudyReaderTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B0D7CFA415662D55A255CFE6 /* Debug */,
+				67DC11607DEE07F5EB47EB32 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		8CA3D8F5487BAB09B960B403 /* Build configuration list for PBXProject "StudyReader" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F7C84F5AFA35812B9AAAADFE /* Debug */,
+				024139CD9D1493486A18B184 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 30EC91118A8E7AE0CA0AFF85 /* Project object */;
+}

@@ -1,0 +1,229 @@
+import SwiftUI
+import WebKit
+import UniformTypeIdentifiers
+
+struct OutlineEntry: Identifiable, Decodable {
+    let id: String
+    let title: String
+    let level: Int
+}
+
+struct ReaderPreferences {
+    var fontSize: Double
+    var theme: String
+    var foldAnswers: Bool
+    var dictionary: [String: Any] { ["fontSize": fontSize, "theme": theme, "foldAnswers": foldAnswers] }
+}
+
+final class ReaderAssets: NSObject, WKURLSchemeHandler {
+    var libraryRoots: [String: URL] = [:]
+    /// Attachments and the font files are read off the main thread: a 25 MB image otherwise
+    /// blocks the whole interface while the article is scrolling.
+    private let queue = DispatchQueue(label: "com.personal.studyreader.reader-assets", qos: .userInitiated, attributes: .concurrent)
+    private var active: Set<ObjectIdentifier> = []
+
+    private static func mimeType(for file: URL) -> String {
+        switch file.pathExtension.lowercased() {
+        case "js": return "application/javascript"
+        case "css": return "text/css"
+        case "html": return "text/html"
+        case "woff2": return "font/woff2"
+        case "woff": return "font/woff"
+        case "ttf": return "font/ttf"
+        default: return UTType(filenameExtension: file.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+        }
+    }
+
+    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        guard let url = urlSchemeTask.request.url else { return }
+        var root: URL?
+        var relativePath = ""
+        if url.host == "app", let bundled = Bundle.main.resourceURL?.appendingPathComponent("Reader") {
+            root = bundled
+            relativePath = String(url.path.dropFirst())
+        } else if url.host == "library" {
+            let parts = url.pathComponents.filter { $0 != "/" }
+            if let id = parts.first, let libraryRoot = libraryRoots[id] {
+                root = libraryRoot
+                relativePath = parts.dropFirst().joined(separator: "/")
+            }
+        }
+        guard let root else {
+            urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
+            return
+        }
+        // WebKit delivers start/stop on the main thread, so the in-flight set needs no lock.
+        let token = ObjectIdentifier(urlSchemeTask)
+        active.insert(token)
+        let path = relativePath
+        queue.async {
+            let file = LibraryDisk.containedURL(root: root, relativePath: path)
+            let data = file.flatMap { try? Data(contentsOf: $0, options: .mappedIfSafe) }
+            let mime = file.map(Self.mimeType) ?? ""
+            DispatchQueue.main.async {
+                guard self.active.remove(token) != nil else { return }
+                guard let data else {
+                    urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
+                    return
+                }
+                urlSchemeTask.didReceive(URLResponse(url: url, mimeType: mime, expectedContentLength: data.count,
+                                                     textEncodingName: mime.hasPrefix("text/") ? "utf-8" : nil))
+                urlSchemeTask.didReceive(data)
+                urlSchemeTask.didFinish()
+            }
+        }
+    }
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
+        active.remove(ObjectIdentifier(urlSchemeTask))
+    }
+}
+
+@MainActor private final class ReaderMessageProxy: NSObject, WKScriptMessageHandler {
+    weak var target: ReaderController?
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        target?.receive(message)
+    }
+}
+
+@MainActor final class ReaderController: NSObject, ObservableObject, WKNavigationDelegate {
+    @Published var outline: [OutlineEntry] = []
+    @Published var isLoading = true
+    @Published var error: String?
+    @Published var formula: String?
+    @Published var findFailed = false
+    let webView: WKWebView
+    let assets: ReaderAssets
+    /// Carries the article id because a save can land after the reader moved on to the next one.
+    var onPosition: ((UUID, ReadingPosition) -> Void)?
+    private var ready = false
+    private var payload: [String: Any]?
+
+    override init() {
+        let configuration = WKWebViewConfiguration()
+        assets = ReaderAssets()
+        configuration.setURLSchemeHandler(assets, forURLScheme: "reader")
+        // Nothing in the article is persisted by the web layer, so skip the on-disk data store.
+        configuration.websiteDataStore = .nonPersistent()
+        let proxy = ReaderMessageProxy()
+        configuration.userContentController.add(proxy, name: "reader")
+        webView = WKWebView(frame: .zero, configuration: configuration)
+        super.init()
+        proxy.target = self
+        webView.navigationDelegate = self
+        #if os(iOS)
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        #endif
+        #if DEBUG
+        webView.isInspectable = true
+        #endif
+        webView.load(URLRequest(url: URL(string: "reader://app/index.html")!))
+    }
+
+    var currentDocumentID: String? { payload?["id"] as? String }
+
+    func display(_ document: LibraryDocument, position: ReadingPosition?, preferences: ReaderPreferences, roots: [String: URL]) {
+        let identifier = document.id.uuidString
+        // The outgoing article reports where it was left before its payload is replaced.
+        if ready, let current = currentDocumentID, current != identifier { savePosition() }
+        assets.libraryRoots = roots
+        var data: [String: Any] = ["id": identifier, "content": document.markdown,
+                                   "baseURL": document.baseURL, "preferences": preferences.dictionary]
+        if let position, let encoded = try? JSONEncoder().encode(position), let value = try? JSONSerialization.jsonObject(with: encoded) {
+            data["position"] = value
+        }
+        payload = data
+        outline = []
+        if ready { render() }
+    }
+    private func render() {
+        guard let payload else { return }
+        isLoading = true
+        call("window.Reader.render(payload)", arguments: ["payload": payload])
+    }
+    func preferences(_ preferences: ReaderPreferences) {
+        payload?["preferences"] = preferences.dictionary
+        if ready { call("window.Reader.preferences(preferences)", arguments: ["preferences": preferences.dictionary]) }
+    }
+    func scroll(to heading: OutlineEntry) {
+        call("window.Reader.scrollToHeading(id)", arguments: ["id": heading.id])
+    }
+    func savePosition() { if ready { call("window.Reader.save()") } }
+    func find(_ text: String) {
+        let config = WKFindConfiguration()
+        config.wraps = true
+        webView.find(text, configuration: config) { [weak self] result in self?.findFailed = !text.isEmpty && !result.matchFound }
+    }
+    private func call(_ script: String, arguments: [String: Any] = [:]) {
+        webView.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .page) { [weak self] result in
+            if case .failure(let error) = result {
+                self?.error = "阅读组件未能完成操作：\(error.localizedDescription)"
+                self?.isLoading = false
+            }
+        }
+    }
+    func receive(_ message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame, let body = message.body as? [String: Any],
+              let id = body["documentID"] as? String, let event = body["event"] as? String else { return }
+        let isCurrent = id == currentDocumentID
+        if event == "position" {
+            guard let documentID = UUID(uuidString: id), let value = body["payload"],
+                  let data = try? JSONSerialization.data(withJSONObject: value),
+                  let position = try? JSONDecoder().decode(ReadingPosition.self, from: data) else { return }
+            if isCurrent { payload?["position"] = value }
+            onPosition?(documentID, position)
+            return
+        }
+        guard isCurrent else { return }
+        switch event {
+        case "outline":
+            if let value = body["payload"], let data = try? JSONSerialization.data(withJSONObject: value) {
+                outline = (try? JSONDecoder().decode([OutlineEntry].self, from: data)) ?? []
+            }
+        case "ready": isLoading = false
+        case "error": error = body["payload"] as? String; isLoading = false
+        case "formula": formula = body["payload"] as? String
+        default: break
+        }
+    }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        ready = true
+        render()
+    }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        self.error = error.localizedDescription
+        isLoading = false
+    }
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
+        if navigationAction.navigationType == .other, url.scheme == "reader", url.host == "app", url.path == "/index.html" {
+            decisionHandler(.allow)
+            return
+        }
+        if navigationAction.navigationType == .linkActivated, ["http", "https"].contains(url.scheme ?? "") {
+            #if os(macOS)
+            NSWorkspace.shared.open(url)
+            #else
+            UIApplication.shared.open(url)
+            #endif
+        } else if navigationAction.navigationType == .linkActivated, let fragment = url.fragment, url.host == "app" {
+            call("document.getElementById(id)?.scrollIntoView()", arguments: ["id": fragment])
+        }
+        decisionHandler(.cancel)
+    }
+}
+
+#if os(macOS)
+struct ReaderWebView: NSViewRepresentable {
+    let controller: ReaderController
+    func makeNSView(context: Context) -> WKWebView { controller.webView }
+    func updateNSView(_ view: WKWebView, context: Context) {}
+}
+#else
+struct ReaderWebView: UIViewRepresentable {
+    let controller: ReaderController
+    func makeUIView(context: Context) -> WKWebView { controller.webView }
+    func updateUIView(_ view: WKWebView, context: Context) {}
+}
+#endif
