@@ -19,14 +19,16 @@ final class LibraryDiskTests: XCTestCase {
         let imageBytes = Data([1, 2, 3])
         try imageBytes.write(to: assets.appendingPathComponent("a.png"))
         _ = try LibraryDisk.importItem(at: source, into: library)
-        let first = try LibraryDisk.load(from: library)
+        let first = try LibraryDisk.loadMetadata(from: library)
         XCTAssertEqual(first.count, 1)
-        XCTAssertEqual(first[0].markdown, markdown)
+        XCTAssertEqual(first[0].title, "lesson")
+        XCTAssertEqual(first[0].record.title, "lesson")
+        XCTAssertEqual(try LibraryDisk.readMarkdown(for: first[0]), markdown)
         XCTAssertEqual(try Data(contentsOf: first[0].rootURL.appendingPathComponent("assets/a.png")), imageBytes)
         XCTAssertEqual(try String(contentsOf: source.appendingPathComponent("lesson.md"), encoding: .utf8), markdown)
-        XCTAssertEqual(try LibraryDisk.load(from: library)[0].id, first[0].id)
+        XCTAssertEqual(try LibraryDisk.loadMetadata(from: library)[0].id, first[0].id)
         if case .duplicate = try LibraryDisk.importItem(at: source, into: library) {} else { XCTFail("Expected duplicate") }
-        XCTAssertEqual(try LibraryDisk.load(from: library).count, 1)
+        XCTAssertEqual(try LibraryDisk.loadMetadata(from: library).count, 1)
     }
 
     func testChangedAttachmentDoesNotDisappearAsDuplicate() throws {
@@ -39,7 +41,7 @@ final class LibraryDiskTests: XCTestCase {
         _ = try LibraryDisk.importItem(at: source, into: library)
         try Data([2]).write(to: image)
         _ = try LibraryDisk.importItem(at: source, into: library)
-        XCTAssertEqual(try LibraryDisk.load(from: library).count, 2)
+        XCTAssertEqual(try LibraryDisk.loadMetadata(from: library).count, 2)
     }
 
     func testFailedImportDoesNotLeavePartialCollection() throws {
@@ -47,7 +49,7 @@ final class LibraryDiskTests: XCTestCase {
         let library = temp.appendingPathComponent("library")
         try Data([0xff, 0xfe, 0xff]).write(to: source)
         XCTAssertThrowsError(try LibraryDisk.importItem(at: source, into: library))
-        XCTAssertEqual(try LibraryDisk.load(from: library).count, 0)
+        XCTAssertEqual(try LibraryDisk.loadMetadata(from: library).count, 0)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: library.path), [])
     }
 
@@ -61,9 +63,15 @@ final class LibraryDiskTests: XCTestCase {
         XCTAssertNotNil(LibraryDisk.containedURL(root: root, relativePath: "assets/图片.png"))
     }
 
-    func testTitleIgnoresMetadataAndFencedExamples() {
+    func testImportedDisplayNameComesFromFilenameIndependentlyOfHeading() throws {
         let input = "---\ntitle: hidden\n---\n```md\n# fake\n```\n# 实际标题\n正文"
-        XCTAssertEqual(LibraryDisk.title(from: input, fallback: "文件名"), "实际标题")
+        let source = temp.appendingPathComponent("文件名.markdown")
+        try Data(input.utf8).write(to: source)
+        let library = temp.appendingPathComponent("Collections")
+        _ = try LibraryDisk.importItem(at: source, into: library)
+        let document = try XCTUnwrap(try LibraryDisk.loadMetadata(from: library).first)
+        XCTAssertEqual(document.title, "文件名")
+        XCTAssertEqual(try LibraryDisk.readMarkdown(for: document), input)
     }
 
     @MainActor func testBundledWebViewRendersMathAndLocalImage() async throws {
@@ -71,14 +79,14 @@ final class LibraryDiskTests: XCTestCase {
         let relative = "probability/阅读验收样例.md"
         let content = try String(contentsOf: root.appendingPathComponent(relative), encoding: .utf8)
         let collection = CollectionManifest(id: UUID(), name: "Test", importedAt: Date(), fingerprint: "test", documents: [])
-        let document = LibraryDocument(record: DocumentRecord(id: UUID(), title: "Sample", relativePath: relative), collection: collection, rootURL: root, markdown: content)
+        let document = LibraryDocument(record: DocumentRecord(id: UUID(), title: "Sample", relativePath: relative), collection: collection, rootURL: root)
         let reader = ReaderController()
         #if os(iOS)
         reader.webView.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
         #else
         reader.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
         #endif
-        reader.display(document, position: nil, preferences: ReaderPreferences(fontSize: 18, theme: "light", foldAnswers: false), roots: [collection.id.uuidString: root])
+        reader.display(document, markdown: content, position: nil, preferences: ReaderPreferences(fontSize: 18, theme: "light", foldAnswers: false), roots: [collection.id.uuidString: root])
         for _ in 0..<150 {
             if !reader.isLoading { break }
             try await Task.sleep(for: .milliseconds(100))
@@ -92,5 +100,18 @@ final class LibraryDiskTests: XCTestCase {
         XCTAssertEqual(imageReady, true)
         let noPageOverflow = try await reader.webView.evaluateJavaScript("document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1") as? Bool
         XCTAssertEqual(noPageOverflow, true, "Math or tables should scroll within their own region")
+
+        // Saving an edit keeps the document ID but must replace cached typesetting and outline.
+        reader.display(document, markdown: "# 保存后的文章\n\n## 新目录\n\n$P(A \\mid B)$\n", position: nil,
+                       preferences: ReaderPreferences(fontSize: 18, theme: "light", foldAnswers: false), roots: [collection.id.uuidString: root])
+        for _ in 0..<100 {
+            if !reader.isLoading { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertNil(reader.error)
+        XCTAssertFalse(reader.isLoading)
+        let savedTitle = try await reader.webView.evaluateJavaScript("document.querySelector('article h1')?.textContent") as? String
+        XCTAssertEqual(savedTitle, "保存后的文章")
+        XCTAssertEqual(reader.outline.map(\.title), ["保存后的文章", "新目录"])
     }
 }

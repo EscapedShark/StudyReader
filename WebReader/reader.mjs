@@ -1,34 +1,23 @@
 import { renderMarkdown, foldAnswers } from './markdown.mjs';
+import { TypesetCache } from './typeset-cache.mjs';
 
 const article = document.querySelector('article');
 let documentID = '', restoring = false, saveTimer, generation = 0;
+let preferencesGeneration = 0;
+let rendering = false;
+let suspended = true, session = '', lastPosition = null, lastCheckpoint = 0;
 let blocks = null;
 function post(event, payload) {
-  window.webkit?.messageHandlers?.reader?.postMessage({ event, payload, documentID });
+  window.webkit?.messageHandlers?.reader?.postMessage({ event, payload, documentID, session });
 }
 // Typesetting formulas dominates opening an article, so the last few stay ready to reuse.
 // The source text is kept as the key so re-imported material is never served from the cache.
-const typesetCache = new Map();
-const typesetLimit = 8_000_000;
-let typesetBytes = 0;
+const typesetCache = new TypesetCache();
 function typeset(payload) {
-  const cached = typesetCache.get(payload.id);
-  if (cached && cached.content === payload.content) {
-    typesetCache.delete(payload.id);
-    typesetCache.set(payload.id, cached);
-    return cached;
-  }
+  const cached = typesetCache.get(payload.id, payload.content, payload.baseURL);
+  if (cached) return cached;
   const result = renderMarkdown(payload.content, payload.baseURL);
-  const entry = { content: payload.content, html: result.html, outline: result.outline };
-  if (cached) { typesetBytes -= cached.html.length; typesetCache.delete(payload.id); }
-  typesetCache.set(payload.id, entry);
-  typesetBytes += entry.html.length;
-  for (const [id, old] of typesetCache) {
-    if (typesetBytes <= typesetLimit || typesetCache.size <= 1) break;
-    typesetCache.delete(id);
-    typesetBytes -= old.html.length;
-  }
-  return entry;
+  return typesetCache.put(payload.id, payload.content, payload.baseURL, result);
 }
 /// Scrolling asks for these several times a second, so the list is collected once per article.
 function readingBlocks() {
@@ -66,8 +55,19 @@ export function capturePosition() {
 function restorePosition(position) {
   if (!position) { scrollTo(0, 0); return; }
   const candidates = readingBlocks();
-  const block = (position.excerpt && candidates.find(el => excerpt(el) === position.excerpt))
-    || candidates.find(el => el.dataset.anchor === position.anchor);
+  const anchored = candidates.find(el => el.dataset.anchor === position.anchor);
+  // Repeated headings/paragraphs are common in study notes. Their text alone cannot identify
+  // where the reader stopped: first try the original source block together with its text.
+  let block = anchored && (!position.excerpt || excerpt(anchored) === position.excerpt) ? anchored : null;
+  if (!block && position.excerpt) {
+    const matches = candidates.filter(el => excerpt(el) === position.excerpt);
+    const line = Number(position.anchor?.match(/^line-(\d+)$/)?.[1]);
+    const distance = el => Number.isFinite(line)
+      ? Math.abs(Number(el.dataset.anchor?.slice(5)) - line)
+      : Math.abs(scrollY + el.getBoundingClientRect().top - (position.progress || 0) * Math.max(0, document.documentElement.scrollHeight - innerHeight));
+    block = matches.reduce((best, el) => !best || distance(el) < distance(best) ? el : best, null);
+  }
+  block ||= anchored;
   if (block) {
     let parent = block.parentElement;
     while (parent && parent !== article) {
@@ -79,6 +79,21 @@ function restorePosition(position) {
   } else {
     scrollTo(0, (position.progress || 0) * Math.max(0, document.documentElement.scrollHeight - innerHeight));
   }
+}
+function checkpoint(expectedSession, suspend = false, cachedOnly = false) {
+  if (expectedSession && expectedSession !== session) return null;
+  if (restoring && !suspend && !cachedOnly) return null;
+  // SwiftUI may detach/resize the shared WebView after leaving a column. Such layout changes
+  // are not reading activity and must not overwrite a valid position with a near-zero value.
+  if (!restoring && !suspended && !cachedOnly && innerHeight > 1 && article.getBoundingClientRect().width > 1) {
+    const position = capturePosition();
+    if (position.anchor || position.excerpt) lastPosition = position;
+  }
+  if (suspend) { suspended = true; clearTimeout(saveTimer); }
+  if (!lastPosition || !documentID) return null;
+  post('position', lastPosition);
+  lastCheckpoint = Date.now();
+  return { documentID, session, position: lastPosition };
 }
 function applyPreferences(prefs) {
   document.documentElement.style.setProperty('--reading-size', `${prefs.fontSize || 18}px`);
@@ -94,10 +109,19 @@ async function settled() {
 }
 window.Reader = {
   async render(payload) {
+    // Capture the outgoing document before replacing its DOM. Re-rendering the same article
+    // can happen when returning from an empty folder; use the retained position in that case.
+    checkpoint();
+    const saved = payload.id === documentID && lastPosition ? lastPosition : payload.position;
     const run = ++generation;
+    ++preferencesGeneration;
+    rendering = true;
     restoring = true;
     clearTimeout(saveTimer);
     documentID = payload.id;
+    session = payload.session || payload.id;
+    suspended = false;
+    lastPosition = saved || null;
     applyPreferences(payload.preferences);
     try {
       const result = typeset(payload);
@@ -116,7 +140,6 @@ window.Reader = {
         }, { once: true });
       }
       post('outline', result.outline);
-      const saved = payload.position;
       if (saved && (saved.excerpt || saved.anchor || saved.progress > 0)) {
         // Landing on the saved spot needs a stable page height, so wait for the attachments.
         await Promise.race([
@@ -134,22 +157,33 @@ window.Reader = {
         await settled();
       }
       if (run !== generation) return;
+      rendering = false;
       restoring = false;
       post('ready', true);
     } catch (error) {
+      if (run !== generation) return;
       article.textContent = `无法排版，以下是原文：\n\n${payload.content}`;
       article.style.whiteSpace = 'pre-wrap';
       blocks = null;
+      rendering = false;
       restoring = false;
       post('error', String(error));
     }
   },
   async preferences(prefs) {
+    const run = generation, preferenceRun = ++preferencesGeneration;
+    // The active render owns restoration until its initial layout has settled.
+    if (rendering) {
+      applyPreferences(prefs);
+      for (const answer of article.querySelectorAll('details.answer')) answer.open = !prefs.foldAnswers;
+      return;
+    }
     const position = capturePosition();
     restoring = true;
     applyPreferences(prefs);
     for (const answer of article.querySelectorAll('details.answer')) answer.open = !prefs.foldAnswers;
     await settled();
+    if (run !== generation || preferenceRun !== preferencesGeneration) return;
     restorePosition(position);
     restoring = false;
   },
@@ -157,14 +191,21 @@ window.Reader = {
     const target = document.getElementById(id);
     if (target) { target.closest('details')?.setAttribute('open', ''); target.scrollIntoView({ behavior: 'auto', block: 'start' }); }
   },
-  save() { if (!restoring) post('position', capturePosition()); },
+  save(expectedSession, suspend = false, cachedOnly = false) {
+    return checkpoint(expectedSession, suspend, cachedOnly);
+  },
+  resume(expectedSession) { if (expectedSession === session) suspended = false; },
 };
 addEventListener('scroll', () => {
   clearTimeout(saveTimer);
-  if (!restoring) saveTimer = setTimeout(() => window.Reader.save(), 250);
+  if (!restoring && !suspended) {
+    // Keep a recent checkpoint even during continuous scrolling, with bounded UI updates.
+    if (Date.now() - lastCheckpoint >= 200) checkpoint();
+    saveTimer = setTimeout(() => checkpoint(), 250);
+  }
 }, { passive: true });
-addEventListener('pagehide', () => window.Reader.save());
-document.addEventListener('visibilitychange', () => { if (document.hidden) window.Reader.save(); });
+addEventListener('pagehide', () => checkpoint(undefined, true, true));
+document.addEventListener('visibilitychange', () => { if (document.hidden) checkpoint(undefined, false, true); });
 document.addEventListener('click', event => {
   const math = event.target.closest?.('.katex');
   if (!math) return;

@@ -6,16 +6,25 @@ struct LibraryView: View {
     /// One reader is kept for the whole session. Rebuilding it per article would reload the
     /// offline typesetting bundle and fonts every time the selection changes.
     @StateObject private var reader = ReaderController()
+    @StateObject private var searchModel = LibrarySearchModel()
     @State private var filter: String? = "all"
     @State private var selectedID: UUID?
+    @State private var selectionRequest = UUID()
     @State private var search = ""
     @State private var showImporter = false
     @State private var importFolder = false
     @State private var importTargetID: UUID?
     @State private var showNewFolder = false
+    @State private var showSyncSettings = false
     @State private var newFolderName = ""
     @State private var newFolderError: String?
+    @State private var documentToDelete: LibraryDocument?
+    @State private var documentToRename: LibraryDocument?
+    @State private var folderToRename: LibraryFolder?
     @State private var targetedFolderID: UUID?
+    #if os(iOS)
+    @State private var folderEditMode: EditMode = .inactive
+    #endif
     @FocusState private var folderNameFocused: Bool
 
     private var selectedFolderID: UUID? { library.folder(matching: filter)?.id }
@@ -27,7 +36,14 @@ struct LibraryView: View {
         default: return library.folder(matching: filter)?.name ?? "资料"
         }
     }
-    private var visibleDocuments: [LibraryDocument] { library.visibleDocuments(filter: filter, search: search) }
+    private struct SearchRequest: Equatable { var query: String; var revision: Int }
+    private var searchRequest: SearchRequest { SearchRequest(query: search, revision: library.contentRevision) }
+    private var searchPending: Bool { !search.isEmpty && (searchModel.isSearching || !searchModel.isCurrent(query: search, revision: library.contentRevision)) }
+    private var visibleDocuments: [LibraryDocument] {
+        guard !searchPending else { return [] }
+        return library.visibleDocuments(filter: filter, matching: search.isEmpty ? nil : searchModel.matchedIDs,
+                                        searchToken: search.isEmpty ? nil : searchModel.resultToken)
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -43,6 +59,15 @@ struct LibraryView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .task {
+            await library.loadIfNeeded()
+            #if os(macOS)
+            if selectedID == nil { updateSelection(reset: true) }
+            #endif
+        }
+        .task(id: searchRequest) {
+            await searchModel.search(query: search, documents: library.documents, revision: library.contentRevision, using: library.searchEngine)
+        }
         .fileImporter(isPresented: $showImporter,
                       allowedContentTypes: importFolder ? [.folder] : [UTType(filenameExtension: "md") ?? .plainText, UTType(filenameExtension: "markdown") ?? .plainText, .plainText],
                       allowsMultipleSelection: !importFolder) { result in
@@ -54,12 +79,23 @@ struct LibraryView: View {
             }
         }
         .sheet(isPresented: $showNewFolder) { newFolderSheet }
+        .sheet(isPresented: $showSyncSettings) { SyncSettingsView() }
+        .sheet(item: $documentToRename) { document in RenameDocumentSheet(document: document) }
+        .sheet(item: $folderToRename) { folder in RenameFolderSheet(folder: folder) }
+        .confirmationDialog("删除文章？", isPresented: Binding(
+            get: { documentToDelete != nil }, set: { if !$0 { documentToDelete = nil } }
+        ), titleVisibility: .visible, presenting: documentToDelete) { document in
+            Button("删除文章", role: .destructive) { delete(document.id) }
+            Button("取消", role: .cancel) { documentToDelete = nil }
+        } message: { document in
+            Text("将删除书架中的「\(document.title)」及其收藏、阅读记录。导入前的原始文件不受影响。")
+        }
         .alert("操作未完成", isPresented: Binding(get: { library.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil } })) {
             Button("知道了") { library.errorMessage = nil }
         } message: { Text(library.errorMessage ?? "") }
         .safeAreaInset(edge: .bottom) {
-            if library.isImporting {
-                HStack { ProgressView().controlSize(.small); Text("正在导入资料…") }.font(.callout).padding(10).frame(maxWidth: .infinity).background(.bar)
+            if library.isImporting || library.isDeleting {
+                HStack { ProgressView().controlSize(.small); Text(library.isDeleting ? "正在删除文章…" : "正在导入资料…") }.font(.callout).padding(10).frame(maxWidth: .infinity).background(.bar)
             } else if let notice = library.notice {
                 HStack { Text(notice); Spacer(); Button("关闭", systemImage: "xmark") { library.notice = nil }.labelStyle(.iconOnly) }
                     .font(.callout).padding(10).background(.bar)
@@ -68,14 +104,94 @@ struct LibraryView: View {
         #if os(macOS)
         .onAppear { if selectedID == nil { selectedID = visibleDocuments.first?.id } }
         #endif
-        .onChange(of: filter) { _, _ in updateSelection(reset: true) }
+        .onChange(of: filter) { _, _ in updateSelection(reset: false, cancelPending: true) }
         // Comparing the library's revision keeps the check off the article list itself, which the
         // reader would otherwise rebuild on every scroll report.
         .onChange(of: library.revision) { _, _ in updateSelection(reset: false) }
-        .onChange(of: search) { _, _ in updateSelection(reset: false) }
+        .onChange(of: searchModel.resultRevision) { _, _ in updateSelection(reset: false) }
     }
 
     private var sidebar: some View {
+        sidebarList
+        .navigationTitle("学习书架")
+        .navigationSplitViewColumnWidth(min: 190, ideal: 215, max: 260)
+        .safeAreaInset(edge: .bottom) {
+            Button { showSyncSettings = true } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: library.syncConnection == nil ? "internaldrive" : (library.syncIssue == nil ? "icloud" : "icloud.slash"))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("\(library.syncConnection == nil ? "本地资料" : "同步资料库") · \(library.documents.count) 篇")
+                        Text(library.syncConnection == nil ? "设置 iCloud Drive 同步" : library.syncStatus)
+                            .font(.caption2)
+                    }
+                    Spacer(minLength: 0)
+                    if library.isSyncing { ProgressView().controlSize(.mini) }
+                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+            }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary).padding()
+                .help("打开资料库同步设置")
+                .accessibilityIdentifier("library-sync-settings")
+        }
+        .toolbar {
+            ToolbarItemGroup {
+                Button("新建资料夹", systemImage: "folder.badge.plus", action: beginNewFolder)
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                    .disabled(!library.canOrganize)
+                    .help("新建资料夹（⇧⌘N）")
+                #if !os(macOS)
+                // macOS shares a toolbar across columns; the article list already has this menu.
+                importMenu
+                Button(folderEditMode.isEditing ? "完成排序" : "资料夹排序", systemImage: "arrow.up.arrow.down") {
+                    withAnimation { folderEditMode = folderEditMode.isEditing ? .inactive : .active }
+                }.disabled(!library.canOrganize || library.collections.count < 2)
+                #endif
+            }
+        }
+        .contextMenu { Button("新建资料夹…", action: beginNewFolder).disabled(!library.canOrganize) }
+    }
+
+    @ViewBuilder private var sidebarList: some View {
+        #if os(macOS)
+        MacLibraryList(rows: [
+            .init(id: "all", title: "全部资料", symbol: "books.vertical"),
+            .init(id: "recent", title: "最近阅读", symbol: "clock"),
+            .init(id: "favorites", title: "收藏", symbol: "star"),
+            .init(id: "folder-heading", title: "资料夹", isHeader: true)
+        ] + library.collections.map { .init(id: $0.id.uuidString, title: $0.name, symbol: "folder", count: $0.documentIDs.count, folderID: $0.id) },
+            selection: $filter, contextID: "sidebar", isSidebar: true, canDrag: library.canOrganize,
+            dropMode: library.canOrganize ? .folders : .none,
+            acceptsDrop: { ids, target in
+                guard library.canOrganize else { return false }
+                switch target {
+                case .folder(let folderID):
+                    guard ids.allSatisfy({ library.document(id: $0) != nil }),
+                          let folder = library.folder(matching: folderID.uuidString) else { return false }
+                    return ids.contains { !folder.documentIDs.contains($0) }
+                case .folderInsertion(_, let visibleIDs):
+                    return library.collections.map(\.id) == visibleIDs && ids.allSatisfy(visibleIDs.contains)
+                case .insertion: return false
+                }
+            }, performDrop: { ids, target in
+                switch target {
+                case .folder(let folderID): return move(ids, to: folderID)
+                case .folderInsertion(let index, let visibleIDs): return reorderFolders(ids, visibleIDs: visibleIDs, at: index)
+                case .insertion: return false
+                }
+            }, menu: { rowID in
+                let menu = NSMenu()
+                menu.autoenablesItems = false
+                if let folder = library.folder(matching: rowID) {
+                    let renameItem = LibraryMenuItem("重命名…", enabled: library.canOrganize) { folderToRename = folder }
+                    renameItem.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: "重命名资料夹")
+                    menu.addItem(renameItem)
+                    menu.addItem(.separator())
+                    menu.addItem(LibraryMenuItem("上移", enabled: library.canOrganize && library.collections.first?.id != folder.id) { shiftFolder(folder.id, down: false) })
+                    menu.addItem(LibraryMenuItem("下移", enabled: library.canOrganize && library.collections.last?.id != folder.id) { shiftFolder(folder.id, down: true) })
+                    menu.addItem(.separator())
+                }
+                menu.addItem(LibraryMenuItem("新建资料夹…", enabled: library.canOrganize, action: beginNewFolder))
+                return menu
+            })
+        #else
         List(selection: $filter) {
             Section {
                 Label("全部资料", systemImage: "books.vertical").tag("all")
@@ -84,27 +200,16 @@ struct LibraryView: View {
             }
             Section("资料夹") {
                 ForEach(library.collections) { folder in folderRow(folder) }
+                    .onMove { indexes, destination in
+                        let order = library.collections.map(\.id)
+                        guard indexes.allSatisfy(order.indices.contains) else { return }
+                        reorderFolders(indexes.map { order[$0] }, visibleIDs: order, at: destination)
+                    }
+                    .moveDisabled(!library.canOrganize)
             }
         }
-        .navigationTitle("学习书架")
-        .navigationSplitViewColumnWidth(min: 190, ideal: 215, max: 260)
-        .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 8) {
-                Image(systemName: "internaldrive")
-                Text("本地资料 · \(library.documents.count) 篇")
-                Spacer()
-            }.font(.caption).foregroundStyle(.secondary).padding()
-        }
-        .toolbar {
-            ToolbarItemGroup {
-                Button("新建资料夹", systemImage: "folder.badge.plus", action: beginNewFolder)
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
-                    .disabled(!library.canOrganize)
-                    .help("新建资料夹（⇧⌘N）")
-                importMenu
-            }
-        }
-        .contextMenu { Button("新建资料夹…", action: beginNewFolder).disabled(!library.canOrganize) }
+        .environment(\.editMode, $folderEditMode)
+        #endif
     }
 
     private func folderRow(_ folder: LibraryFolder) -> some View {
@@ -124,30 +229,29 @@ struct LibraryView: View {
                 else if targetedFolderID == folder.id { targetedFolderID = nil }
             }
         )) { providers in receiveMove(providers, to: folder.id) }
-        .help("把文章拖到这里，移动到「\(folder.name)」")
+        .help("上下拖动资料夹排序；把文章拖到这里可移动到「\(folder.name)」")
+        .contextMenu {
+            Button("重命名…", systemImage: "pencil") { folderToRename = folder }
+                .disabled(!library.canOrganize)
+            Divider()
+            Button("上移", systemImage: "arrow.up") { shiftFolder(folder.id, down: false) }
+                .disabled(!library.canOrganize || library.collections.first?.id == folder.id)
+            Button("下移", systemImage: "arrow.down") { shiftFolder(folder.id, down: true) }
+                .disabled(!library.canOrganize || library.collections.last?.id == folder.id)
+        }
     }
 
     private var documentList: some View {
-        List(selection: $selectedID) {
-            ForEach(visibleDocuments) { document in
-                NavigationLink(value: document.id) {
-                    DocumentRow(title: document.title,
-                                folderName: library.folderName(for: document.id),
-                                isFavorite: library.isFavorite(document.id),
-                                progress: library.position(for: document.id)?.progress ?? 0)
-                }
-                .onDrag { DocumentDrag.provider(for: document.id, title: document.title) }
-                .contextMenu { documentActions(document) }
-            }
-            .onInsert(of: filter == "recent" || !library.canOrganize ? [] : [DocumentDrag.typeIdentifier]) { index, providers in
-                receiveReorder(providers, at: index)
-            }
-        }
+        documentRows
         .navigationTitle(title)
         .navigationSplitViewColumnWidth(min: 230, ideal: 290, max: 360)
         .searchable(text: $search, prompt: "搜索标题或正文")
         .overlay {
-            if visibleDocuments.isEmpty {
+            if library.isLoading || searchPending {
+                ProgressView(library.isLoading ? "正在打开资料库…" : "正在搜索…")
+            } else if !search.isEmpty, let error = searchModel.error {
+                ContentUnavailableView("搜索未完成", systemImage: "exclamationmark.magnifyingglass", description: Text(error))
+            } else if visibleDocuments.isEmpty {
                 ContentUnavailableView(search.isEmpty ? "还没有资料" : "没有找到匹配内容",
                                        systemImage: search.isEmpty ? "doc.badge.plus" : "magnifyingglass",
                                        description: Text(search.isEmpty ? "导入 Markdown，或把文章拖到左侧资料夹。" : "试试正文里的关键词。"))
@@ -162,7 +266,77 @@ struct LibraryView: View {
         #endif
     }
 
+    @ViewBuilder private var documentRows: some View {
+        #if os(macOS)
+        MacLibraryList(rows: visibleDocuments.map {
+            .init(id: $0.id.uuidString, title: $0.title, documentID: $0.id,
+                  isFavorite: library.isFavorite($0.id), progress: library.position(for: $0.id)?.progress ?? 0)
+        }, selection: Binding(get: { selectedID?.uuidString }, set: { selectDocument($0.flatMap(UUID.init(uuidString:))) }),
+            contextID: filter ?? "all", canDrag: library.canOrganize && !searchPending,
+            dropMode: library.canOrganize && !searchPending && filter != "recent" ? .reorder : .none,
+            acceptsDrop: { ids, target in
+                guard library.canOrganize, !searchPending, filter != "recent",
+                      case .insertion(_, let visibleIDs) = target else { return false }
+                return ids.allSatisfy(visibleIDs.contains)
+            }, performDrop: { ids, target in
+                guard case .insertion(let index, let visibleIDs) = target else { return false }
+                do {
+                    try library.reorderDocuments(ids, visibleIDs: visibleIDs, at: index, folderID: selectedFolderID)
+                    return true
+                } catch { library.errorMessage = error.localizedDescription; return false }
+            }, menu: documentMenu)
+        #else
+        List(selection: Binding(get: { selectedID }, set: selectDocument)) {
+            ForEach(visibleDocuments) { document in
+                NavigationLink(value: document.id) {
+                    DocumentRow(title: document.title,
+                                isFavorite: library.isFavorite(document.id),
+                                progress: library.position(for: document.id)?.progress ?? 0)
+                        .onDrag { DocumentDrag.provider(for: document.id, title: document.title) }
+                }
+                .contextMenu { documentActions(document) }
+            }
+            .onInsert(of: filter == "recent" || !library.canOrganize || searchPending ? [] : [DocumentDrag.typeIdentifier]) { index, providers in
+                receiveReorder(providers, at: index)
+            }
+        }
+        #endif
+    }
+
+    #if os(macOS)
+    private func documentMenu(_ rowID: String?) -> NSMenu? {
+        guard let id = rowID.flatMap(UUID.init(uuidString:)), let document = library.document(id: id) else { return nil }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let renameItem = LibraryMenuItem("重命名…", enabled: library.canOrganize) { documentToRename = document }
+        renameItem.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: "重命名")
+        menu.addItem(renameItem)
+        menu.addItem(LibraryMenuItem(library.isFavorite(id) ? "取消收藏" : "收藏") { library.toggleFavorite(id) })
+        let moveMenu = NSMenu()
+        moveMenu.autoenablesItems = false
+        for folder in library.collections {
+            moveMenu.addItem(LibraryMenuItem(folder.name, enabled: library.canOrganize && !folder.documentIDs.contains(id)) { move([id], to: folder.id) })
+        }
+        let moveItem = NSMenuItem(title: "移到资料夹", action: nil, keyEquivalent: "")
+        moveItem.submenu = moveMenu
+        moveItem.isEnabled = library.canOrganize
+        menu.addItem(moveItem)
+        if filter != "recent" {
+            menu.addItem(.separator())
+            menu.addItem(LibraryMenuItem("上移", enabled: library.canOrganize && visibleDocuments.first?.id != id) { shift(id, down: false) })
+            menu.addItem(LibraryMenuItem("下移", enabled: library.canOrganize && visibleDocuments.last?.id != id) { shift(id, down: true) })
+        }
+        menu.addItem(.separator())
+        let deleteItem = LibraryMenuItem("删除文章…", enabled: library.canOrganize) { documentToDelete = document }
+        deleteItem.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "删除文章")
+        menu.addItem(deleteItem)
+        return menu
+    }
+    #endif
+
     @ViewBuilder private func documentActions(_ document: LibraryDocument) -> some View {
+        Button("重命名…", systemImage: "pencil") { documentToRename = document }
+            .disabled(!library.canOrganize)
         Button(library.isFavorite(document.id) ? "取消收藏" : "收藏") { library.toggleFavorite(document.id) }
         Menu("移到资料夹") {
             ForEach(library.collections) { folder in
@@ -177,6 +351,9 @@ struct LibraryView: View {
             Button("下移", systemImage: "arrow.down") { shift(document.id, down: true) }
                 .disabled(!library.canOrganize || visibleDocuments.last?.id == document.id)
         }
+        Divider()
+        Button("删除文章", systemImage: "trash", role: .destructive) { documentToDelete = document }
+            .disabled(!library.canOrganize)
     }
 
     private var importMenu: some View {
@@ -193,6 +370,8 @@ struct LibraryView: View {
                 importTargetID = nil
                 showImporter = true
             }
+            Divider()
+            Button("资料库同步…", systemImage: "icloud") { showSyncSettings = true }
         } label: { Label("添加资料", systemImage: "plus") }
         .disabled(!library.canOrganize)
         .help("新建资料夹或导入资料")
@@ -229,20 +408,41 @@ struct LibraryView: View {
             showNewFolder = false
         } catch { newFolderError = error.localizedDescription }
     }
-    private func updateSelection(reset: Bool) {
-        guard reset || (selectedID != nil && !visibleDocuments.contains { $0.id == selectedID }) else { return }
+    private func updateSelection(reset: Bool, cancelPending: Bool = false) {
+        guard !searchPending else { return }
+        guard reset || selectedID == nil || !visibleDocuments.contains(where: { $0.id == selectedID }) else {
+            if cancelPending { selectDocument(selectedID) }
+            return
+        }
         #if os(macOS)
-        selectedID = visibleDocuments.first?.id
+        selectDocument(visibleDocuments.first?.id)
         #else
-        selectedID = nil
+        selectDocument(nil)
         #endif
     }
-    private func move(_ ids: [UUID], to folderID: UUID) {
+    private func selectDocument(_ id: UUID?) {
+        let request = UUID()
+        selectionRequest = request
+        guard id != selectedID else {
+            if id != nil { reader.resumeReading() }
+            return
+        }
+        Task {
+            // Await the WebView checkpoint while its current layout still exists. The latest
+            // click wins if another column/article was selected during this round trip.
+            await reader.prepareToLeave()
+            guard request == selectionRequest else { return }
+            library.flush()
+            selectedID = id
+        }
+    }
+    @discardableResult private func move(_ ids: [UUID], to folderID: UUID) -> Bool {
         do {
             try library.moveDocuments(ids, to: folderID)
             let name = library.collections.first { $0.id == folderID }?.name ?? "资料夹"
             library.notice = "已将 \(ids.count) 篇文章移到「\(name)」"
-        } catch { library.errorMessage = error.localizedDescription }
+            return true
+        } catch { library.errorMessage = error.localizedDescription; return false }
     }
     private func receiveMove(_ providers: [NSItemProvider], to folderID: UUID) -> Bool {
         guard library.canOrganize, providers.contains(where: { $0.hasItemConformingToTypeIdentifier(DocumentDrag.typeIdentifier) }) else { return false }
@@ -267,12 +467,29 @@ struct LibraryView: View {
         do { try library.reorderDocuments([id], visibleIDs: ids, at: down ? index + 2 : index - 1, folderID: selectedFolderID) }
         catch { library.errorMessage = error.localizedDescription }
     }
+    @discardableResult private func reorderFolders(_ ids: [UUID], visibleIDs: [UUID], at index: Int) -> Bool {
+        do {
+            try library.reorderFolders(ids, visibleIDs: visibleIDs, at: index)
+            return true
+        } catch { library.errorMessage = error.localizedDescription; return false }
+    }
+    private func shiftFolder(_ id: UUID, down: Bool) {
+        let ids = library.collections.map(\.id)
+        guard let index = ids.firstIndex(of: id) else { return }
+        reorderFolders([id], visibleIDs: ids, at: down ? index + 2 : index - 1)
+    }
+    private func delete(_ id: UUID) {
+        documentToDelete = nil
+        Task { @MainActor in
+            do { try await library.deleteDocument(id) }
+            catch { library.errorMessage = error.localizedDescription }
+        }
+    }
 }
 
 /// Plain values only, so an unrelated store update redraws a row just when its own text moved.
 private struct DocumentRow: View {
     let title: String
-    let folderName: String
     let isFavorite: Bool
     let progress: Double
 
@@ -285,7 +502,6 @@ private struct DocumentRow: View {
                     Image(systemName: "star.fill").foregroundStyle(.orange).font(.caption)
                 }
             }
-            Text(folderName).font(.caption).foregroundStyle(.secondary)
             if progress > 0.02 {
                 ProgressView(value: progress).tint(.secondary).frame(maxWidth: 120)
             }

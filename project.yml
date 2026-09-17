@@ -12,7 +12,7 @@ settings:
     MACOSX_DEPLOYMENT_TARGET: "14.0"
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: 1
+    CURRENT_PROJECT_VERSION: 3
     CODE_SIGN_STYLE: Automatic
 settingGroups:
   localDebugSigning:
@@ -27,6 +27,18 @@ targets:
   StudyReader:
     type: application
     supportedDestinations: [iOS, macOS]
+    info:
+      path: StudyReader/Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.personal.studyreader.document-id
+            UTTypeDescription: 学习书架文章
+            UTTypeConformsTo: [public.data]
+          - UTTypeIdentifier: com.personal.studyreader.folder-id
+            UTTypeDescription: 学习书架资料夹
+            UTTypeConformsTo: [public.data]
     sources:
       - path: StudyReader
         excludes: [Resources, StudyReader.entitlements]
@@ -40,6 +52,7 @@ targets:
       groups: [localDebugSigning]
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.personal.studyreader
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: 学习书架
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.education
@@ -53,7 +66,9 @@ targets:
         CODE_SIGN_ENTITLEMENTS: StudyReader/StudyReader.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
     scheme:
-      testTargets: [StudyReaderTests]
+      testTargets:
+        - name: StudyReaderTests
+          parallelizable: false
   StudyReaderTests:
     type: bundle.unit-test
     supportedDestinations: [iOS, macOS]
@@ -68,4 +83,4 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/StudyReader.app/StudyReader"
         "TEST_HOST[sdk=macosx*]": "$(BUILT_PRODUCTS_DIR)/StudyReader.app/Contents/MacOS/StudyReader"
         BUNDLE_LOADER: "$(TEST_HOST)"
-fileGroups: [PLAN.md, README.md, WebReader, scripts, package.json]
+fileGroups: [PLAN.md, README.md, SYNC.md, WebReader, scripts, package.json]

@@ -97,6 +97,7 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
     var onPosition: ((UUID, ReadingPosition) -> Void)?
     private var ready = false
     private var payload: [String: Any]?
+    private var latestSession: [UUID: String] = [:]
 
     override init() {
         let configuration = WKWebViewConfiguration()
@@ -123,19 +124,21 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
 
     var currentDocumentID: String? { payload?["id"] as? String }
 
-    func display(_ document: LibraryDocument, position: ReadingPosition?, preferences: ReaderPreferences, roots: [String: URL]) {
+    @discardableResult func display(_ document: LibraryDocument, markdown: String, position: ReadingPosition?, preferences: ReaderPreferences, roots: [String: URL]) -> String {
         let identifier = document.id.uuidString
-        // The outgoing article reports where it was left before its payload is replaced.
-        if ready, let current = currentDocumentID, current != identifier { savePosition() }
         assets.libraryRoots = roots
-        var data: [String: Any] = ["id": identifier, "content": document.markdown,
-                                   "baseURL": document.baseURL, "preferences": preferences.dictionary]
+        let session = UUID().uuidString
+        latestSession[document.id] = session
+        var data: [String: Any] = ["id": identifier, "content": markdown,
+                                   "baseURL": document.baseURL, "preferences": preferences.dictionary, "session": session]
         if let position, let encoded = try? JSONEncoder().encode(position), let value = try? JSONSerialization.jsonObject(with: encoded) {
             data["position"] = value
         }
         payload = data
+        error = nil
         outline = []
         if ready { render() }
+        return session
     }
     private func render() {
         guard let payload else { return }
@@ -149,14 +152,47 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
     func scroll(to heading: OutlineEntry) {
         call("window.Reader.scrollToHeading(id)", arguments: ["id": heading.id])
     }
-    func savePosition() { if ready { call("window.Reader.save()") } }
+    func savePosition(for documentID: UUID? = nil, session expectedSession: String? = nil, suspend: Bool = false, cachedOnly: Bool = false,
+                      completion: @escaping () -> Void = {}) {
+        guard ready, let id = currentDocumentID, documentID == nil || documentID?.uuidString == id,
+              let session = payload?["session"] as? String,
+              expectedSession == nil || expectedSession == session else { completion(); return }
+        webView.callAsyncJavaScript("return window.Reader.save(session, suspend, cachedOnly)",
+                                   arguments: ["session": session, "suspend": suspend, "cachedOnly": cachedOnly], in: nil, in: .page) { [weak self] result in
+            if case .success(let value) = result, let value = value as? [String: Any],
+               let id = value["documentID"] as? String, let session = value["session"] as? String {
+                self?.acceptPosition(value["position"], id: id, session: session)
+            }
+            // The caller can now change selection or flush the actual captured position.
+            completion()
+        }
+    }
+    func prepareToLeave() async {
+        await withCheckedContinuation { continuation in
+            savePosition(suspend: true) { continuation.resume() }
+        }
+    }
+    func resumeReading() {
+        guard ready, let session = payload?["session"] as? String else { return }
+        call("window.Reader.resume(session)", arguments: ["session": session])
+    }
+    private func acceptPosition(_ value: Any?, id: String, session: String) {
+        guard let documentID = UUID(uuidString: id), latestSession[documentID] == session,
+              let value, let data = try? JSONSerialization.data(withJSONObject: value),
+              let position = try? JSONDecoder().decode(ReadingPosition.self, from: data) else { return }
+        if id == currentDocumentID { payload?["position"] = value }
+        onPosition?(documentID, position)
+    }
     func find(_ text: String) {
         let config = WKFindConfiguration()
         config.wraps = true
         webView.find(text, configuration: config) { [weak self] result in self?.findFailed = !text.isEmpty && !result.matchFound }
     }
     private func call(_ script: String, arguments: [String: Any] = [:]) {
+        let documentID = currentDocumentID
+        let session = payload?["session"] as? String
         webView.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .page) { [weak self] result in
+            guard self?.currentDocumentID == documentID, self?.payload?["session"] as? String == session else { return }
             if case .failure(let error) = result {
                 self?.error = "阅读组件未能完成操作：\(error.localizedDescription)"
                 self?.isLoading = false
@@ -165,14 +201,11 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
     }
     func receive(_ message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, let body = message.body as? [String: Any],
-              let id = body["documentID"] as? String, let event = body["event"] as? String else { return }
-        let isCurrent = id == currentDocumentID
+              let id = body["documentID"] as? String, let event = body["event"] as? String,
+              let session = body["session"] as? String else { return }
+        let isCurrent = id == currentDocumentID && session == payload?["session"] as? String
         if event == "position" {
-            guard let documentID = UUID(uuidString: id), let value = body["payload"],
-                  let data = try? JSONSerialization.data(withJSONObject: value),
-                  let position = try? JSONDecoder().decode(ReadingPosition.self, from: data) else { return }
-            if isCurrent { payload?["position"] = value }
-            onPosition?(documentID, position)
+            acceptPosition(body["payload"], id: id, session: session)
             return
         }
         guard isCurrent else { return }

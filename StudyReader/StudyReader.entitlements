@@ -4,6 +4,7 @@
 <dict>
   <key>com.apple.security.app-sandbox</key><true/>
   <key>com.apple.security.files.user-selected.read-write</key><true/>
+  <key>com.apple.security.files.bookmarks.app-scope</key><true/>
   <!-- WebKit's helper processes require the client entitlement in the Mac sandbox. -->
   <key>com.apple.security.network.client</key><true/>
 </dict>

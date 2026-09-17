@@ -26,6 +26,18 @@ struct ReaderView: View {
     @State private var showFind = false
     @State private var findText = ""
     @State private var showExport = false
+    @State private var editDraft: EditDraft?
+    @State private var markdown: String?
+    @State private var loadedRecord: DocumentRecord?
+    @State private var loadedSession: String?
+    @State private var loadingError: String?
+    private struct EditDraft: Identifiable {
+        let id = UUID()
+        let document: LibraryDocument
+        let markdown: String
+    }
+    private struct LoadKey: Equatable { var record: DocumentRecord; var root: URL }
+    private var hasLoadedDocument: Bool { loadedRecord == document.record }
 
     private var preferences: ReaderPreferences { ReaderPreferences(fontSize: fontSize, theme: theme, foldAnswers: foldAnswers) }
     var body: some View {
@@ -40,7 +52,15 @@ struct ReaderView: View {
                 }.padding(12).background(.bar)
             }
             ReaderWebView(controller: controller)
-                .overlay { if controller.isLoading { ProgressView("正在排版…").padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
+                .opacity(hasLoadedDocument ? 1 : 0)
+                .overlay {
+                    if let error = loadingError {
+                        ContentUnavailableView("文章暂时无法读取", systemImage: "doc.badge.ellipsis", description: Text(error))
+                    } else if !hasLoadedDocument || controller.isLoading {
+                        ProgressView(hasLoadedDocument ? "正在排版…" : "正在打开文章…")
+                            .padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
         }
         .navigationTitle(document.title)
         .toolbar {
@@ -52,15 +72,32 @@ struct ReaderView: View {
                 Button("阅读设置", systemImage: "textformat.size") { showPreferences = true }
                     .popover(isPresented: $showPreferences) { preferencesView }
                 Menu {
+                    Button("编辑当前文章", systemImage: "square.and.pencil") {
+                        if let markdown { editDraft = EditDraft(document: document, markdown: markdown) }
+                    }
+                    .disabled(!hasLoadedDocument || markdown == nil || !library.canOrganize)
+                    Divider()
                     Button("在文章中查找", systemImage: "magnifyingglass") { showFind.toggle() }
                     Button("导出本文 Markdown", systemImage: "square.and.arrow.up") { showExport = true }
+                        .disabled(!hasLoadedDocument || markdown == nil)
                 } label: { Label("更多", systemImage: "ellipsis.circle") }
             }
         }
-        .task(id: document.id) {
+        .task(id: LoadKey(record: document.record, root: document.rootURL)) {
             controller.onPosition = { id, position in library.updatePosition(position, id: id) }
-            controller.display(document, position: library.position(for: document.id), preferences: preferences, roots: library.roots)
-            library.opened(document.id)
+            markdown = nil
+            loadedRecord = nil
+            loadingError = nil
+            do {
+                let content = try await library.content.markdown(for: document)
+                try Task.checkCancellation()
+                markdown = content
+                loadedRecord = document.record
+                loadedSession = controller.display(document, markdown: content, position: library.position(for: document.id), preferences: preferences, roots: library.roots)
+                library.opened(document.id)
+            } catch is CancellationError {
+                // Another article now owns the shared reader.
+            } catch { if !Task.isCancelled { loadingError = error.localizedDescription } }
         }
         .onChange(of: document.id) { _, _ in
             showOutline = false
@@ -68,14 +105,19 @@ struct ReaderView: View {
             findText = ""
             controller.find("")
         }
-        .onDisappear { controller.savePosition(); library.flush() }
+        .onDisappear {
+            controller.savePosition(for: document.id, session: loadedSession, suspend: true, cachedOnly: true) { library.flush() }
+        }
         .onChange(of: fontSize) { _, _ in controller.preferences(preferences) }
         .onChange(of: theme) { _, _ in controller.preferences(preferences) }
         .onChange(of: foldAnswers) { _, _ in controller.preferences(preferences) }
         .onChange(of: findText) { _, value in controller.find(value) }
-        .fileExporter(isPresented: $showExport, document: MarkdownExport(text: document.markdown), contentType: .plainText,
+        .fileExporter(isPresented: $showExport, document: MarkdownExport(text: markdown ?? ""), contentType: .plainText,
                       defaultFilename: document.fileURL.lastPathComponent) { result in
             if case .failure(let error) = result { library.errorMessage = error.localizedDescription }
+        }
+        .sheet(item: $editDraft) { draft in
+            ArticleEditor(document: draft.document, markdown: draft.markdown)
         }
         .alert("阅读组件提示", isPresented: Binding(get: { controller.error != nil }, set: { if !$0 { controller.error = nil } })) {
             Button("知道了") { controller.error = nil }

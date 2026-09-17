@@ -1,21 +1,27 @@
 import Foundation
 
-struct LibraryFolder: Codable, Identifiable, Equatable {
+struct LibraryFolder: Codable, Identifiable, Equatable, Sendable {
     let id: UUID
     var name: String
     var documentIDs: [UUID]
 }
 
 /// Display folders are independent of import packages, so organizing never breaks relative assets.
-struct LibraryOrganization: Codable, Equatable {
+struct LibraryOrganization: Codable, Equatable, Sendable {
     var folders: [LibraryFolder] = []
     var documentOrder: [UUID] = []
+    // Legacy versions displayed folders alphabetically regardless of their stored array order.
+    var folderOrderVersion: Int? = 1
 
     static func load(from url: URL, documents: [LibraryDocument]) throws -> LibraryOrganization {
         let stored = FileManager.default.fileExists(atPath: url.path)
             ? try JSONDecoder().decode(Self.self, from: Data(contentsOf: url)) : nil
         var result = stored ?? Self()
         result.reconcile(with: documents)
+        if result.folderOrderVersion == nil {
+            result.folders.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            result.folderOrderVersion = 1
+        }
         // Launching without any change must not pay for an atomic rewrite of the whole record.
         if result != stored { try result.save(to: url) }
         return result
@@ -51,15 +57,45 @@ struct LibraryOrganization: Codable, Equatable {
     }
 
     mutating func createFolder(named name: String) throws -> UUID {
-        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { throw ReaderFailure(message: "请输入资料夹名称。") }
-        guard name.count <= 100 else { throw ReaderFailure(message: "资料夹名称请控制在 100 个字以内。") }
-        guard !folders.contains(where: { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }) else {
-            throw ReaderFailure(message: "已经有同名资料夹，请换一个名称。")
-        }
+        let name = try validatedFolderName(name)
         let id = UUID()
         folders.append(LibraryFolder(id: id, name: name, documentIDs: []))
         return id
+    }
+
+    mutating func renameFolder(_ id: UUID, to name: String) throws {
+        guard let index = folders.firstIndex(where: { $0.id == id }) else {
+            throw ReaderFailure(message: "资料夹不存在，请重新选择。")
+        }
+        folders[index].name = try validatedFolderName(name, excluding: id)
+    }
+
+    mutating func reorderFolders(_ ids: [UUID], visibleIDs: [UUID], at insertionIndex: Int) throws {
+        guard folders.map(\.id) == visibleIDs else {
+            throw ReaderFailure(message: "资料夹列表已发生变化，请重新拖动。")
+        }
+        let moving = Set(ids)
+        guard !ids.isEmpty, moving.count == ids.count, moving.isSubset(of: Set(visibleIDs)) else {
+            throw ReaderFailure(message: "请拖动当前列表中的资料夹。")
+        }
+        let index = min(max(0, insertionIndex), folders.count)
+        let adjustedIndex = folders.prefix(index).filter { !moving.contains($0.id) }.count
+        let selected = folders.filter { moving.contains($0.id) }
+        folders.removeAll { moving.contains($0.id) }
+        folders.insert(contentsOf: selected, at: adjustedIndex)
+    }
+
+    private func validatedFolderName(_ rawName: String, excluding id: UUID? = nil) throws -> String {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw ReaderFailure(message: "请输入资料夹名称。") }
+        guard name.count <= 100 else { throw ReaderFailure(message: "资料夹名称请控制在 100 个字以内。") }
+        guard name.rangeOfCharacter(from: .controlCharacters) == nil else {
+            throw ReaderFailure(message: "资料夹名称不能包含换行或控制字符。")
+        }
+        guard !folders.contains(where: { $0.id != id && $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }) else {
+            throw ReaderFailure(message: "已经有同名资料夹，请换一个名称。")
+        }
+        return name
     }
 
     func folder(containing documentID: UUID) -> LibraryFolder? {

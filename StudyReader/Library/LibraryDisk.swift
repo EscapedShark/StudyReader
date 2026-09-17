@@ -1,18 +1,21 @@
 import Foundation
 import CryptoKit
 
-struct ReaderFailure: LocalizedError {
+struct ReaderFailure: LocalizedError, Sendable {
     let message: String
     var errorDescription: String? { message }
 }
 
-struct DocumentRecord: Codable, Identifiable {
+struct DocumentRecord: Codable, Identifiable, Hashable, Sendable {
     let id: UUID
     let title: String
     let relativePath: String
+    // Optional fields keep existing imported manifests readable.
+    var revision: UUID? = nil
+    var usesCustomTitle: Bool? = nil
 }
 
-struct CollectionManifest: Codable {
+struct CollectionManifest: Codable, Sendable {
     let id: UUID
     let name: String
     let importedAt: Date
@@ -20,20 +23,14 @@ struct CollectionManifest: Codable {
     let documents: [DocumentRecord]
 }
 
-struct LibraryDocument: Identifiable {
+struct LibraryDocument: Identifiable, Sendable {
     let record: DocumentRecord
     let collection: CollectionManifest
     let rootURL: URL
-    let markdown: String
     var id: UUID { record.id }
-    var title: String { record.title }
+    var title: String { DocumentFileName.title(for: record.relativePath) }
     var fileURL: URL { rootURL.appendingPathComponent(record.relativePath) }
     var subtitle: String { (record.relativePath as NSString).deletingLastPathComponent }
-    /// Search runs over every article on each keystroke, so the two fields are scanned in place
-    /// instead of allocating a combined haystack per document per pass.
-    func matches(_ search: String) -> Bool {
-        search.isEmpty || title.localizedStandardContains(search) || markdown.localizedStandardContains(search)
-    }
     var baseURL: String {
         var url = URL(string: "reader://library/\(collection.id.uuidString)/")!
         for component in record.relativePath.split(separator: "/") {
@@ -43,29 +40,16 @@ struct LibraryDocument: Identifiable {
     }
 }
 
-enum ImportResult { case imported(Int), duplicate }
+enum ImportResult: Sendable { case imported([LibraryDocument]), duplicate }
+
+struct DocumentDeletion: Sendable {
+    let collection: CollectionManifest
+    let cleanupError: String?
+}
 
 enum LibraryDisk {
     static let markdownExtensions: Set<String> = ["md", "markdown"]
     static let supportedExtensions = markdownExtensions.union(["png", "jpg", "jpeg", "gif", "webp", "svg"])
-
-    static func title(from markdown: String, fallback: String) -> String {
-        var text = markdown.trimmingCharacters(in: CharacterSet(charactersIn: "\u{FEFF}"))
-        if let range = text.range(of: "^---\\r?\\n[\\s\\S]*?\\r?\\n(?:---|\\.\\.\\.)\\s*(?:\\r?\\n|$)", options: .regularExpression) {
-            text.removeSubrange(range)
-        }
-        var fence: String?
-        for line in text.components(separatedBy: .newlines) {
-            if line.hasPrefix("```") || line.hasPrefix("~~~") {
-                let marker = String(line.prefix(3))
-                if fence == marker { fence = nil } else if fence == nil { fence = marker }
-            }
-            if fence == nil, line.hasPrefix("# ") {
-                return String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-            }
-        }
-        return fallback
-    }
 
     static func containedURL(root: URL, relativePath: String) -> URL? {
         guard !relativePath.hasPrefix("/"), !relativePath.contains("\0") else { return nil }
@@ -101,16 +85,19 @@ enum LibraryDisk {
         Set(try manifests(in: libraryURL).map(\.manifest.fingerprint))
     }
 
-    static func load(from libraryURL: URL) throws -> [LibraryDocument] {
+    /// The shelf only needs manifests. Body validation and file access happen when it is opened.
+    static func loadMetadata(from libraryURL: URL) throws -> [LibraryDocument] {
         var documents: [LibraryDocument] = []
-        for (folder, manifest) in try manifests(in: libraryURL) {
-            for record in manifest.documents {
-                guard let fileURL = containedURL(root: folder, relativePath: record.relativePath) else {
+        for (folder, storedManifest) in try manifests(in: libraryURL) {
+            for record in storedManifest.documents {
+                let path = record.relativePath
+                let candidate = folder.appendingPathComponent(path).standardizedFileURL
+                guard !path.hasPrefix("/"), !path.contains("\0"), candidate.path.hasPrefix(folder.standardizedFileURL.path + "/") else {
                     throw ReaderFailure(message: "资料路径无效：\(record.relativePath)")
                 }
-                let content = try String(contentsOf: fileURL, encoding: .utf8)
-                documents.append(LibraryDocument(record: record, collection: manifest, rootURL: folder, markdown: content))
             }
+            let manifest = try migrateFileNames(in: storedManifest, root: folder)
+            documents.append(contentsOf: manifest.documents.map { LibraryDocument(record: $0, collection: manifest, rootURL: folder) })
         }
         return documents.sorted {
             if $0.collection.importedAt != $1.collection.importedAt { return $0.collection.importedAt > $1.collection.importedAt }
@@ -118,7 +105,48 @@ enum LibraryDisk {
         }
     }
 
-    static func importItem(at source: URL, into libraryURL: URL, name: String? = nil) throws -> ImportResult {
+    static func readMarkdown(for document: LibraryDocument) throws -> String {
+        guard let url = containedURL(root: document.rootURL, relativePath: document.record.relativePath) else {
+            throw ReaderFailure(message: "资料路径无效：\(document.record.relativePath)")
+        }
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard size <= 5_000_000 else { throw ReaderFailure(message: "这篇 Markdown 超过 5 MB，请拆分后导入。") }
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    static func deleteDocument(_ document: LibraryDocument) throws -> DocumentDeletion {
+        let manifestURL = document.rootURL.appendingPathComponent(".reader-collection.json")
+        let manifest = try JSONDecoder().decode(CollectionManifest.self, from: Data(contentsOf: manifestURL))
+        guard manifest.id == document.collection.id,
+              let record = manifest.documents.first(where: { $0.id == document.id }),
+              let fileURL = containedURL(root: document.rootURL, relativePath: record.relativePath) else {
+            throw ReaderFailure(message: "文章已发生变化，请重新打开资料库后重试。")
+        }
+        let fm = FileManager.default
+        let fileExists = fm.fileExists(atPath: fileURL.path)
+        if fileExists {
+            guard try fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                throw ReaderFailure(message: "文章路径不是普通文件，未删除任何内容。")
+            }
+        }
+        // A changed package must no longer block reimporting the original source as a duplicate.
+        let fingerprint = SHA256.hash(data: Data("\(manifest.fingerprint):deleted:\(document.id.uuidString)".utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        let updated = CollectionManifest(id: manifest.id, name: manifest.name, importedAt: manifest.importedAt,
+                                         fingerprint: fingerprint, documents: manifest.documents.filter { $0.id != document.id })
+        // The manifest is authoritative. Commit it before removing the copied Markdown so an
+        // interrupted deletion never leaves a visible article pointing at a missing file.
+        try JSONEncoder().encode(updated).write(to: manifestURL, options: .atomic)
+        var cleanupError: String?
+        if fileExists {
+            do { try fm.removeItem(at: fileURL) }
+            catch { cleanupError = "文章已从书架删除，但本地副本未能清理：\(error.localizedDescription)" }
+        }
+        // Images can be shared by other articles in the package; only remove this Markdown.
+        return DocumentDeletion(collection: updated, cleanupError: cleanupError)
+    }
+
+    static func importItem(at source: URL, into libraryURL: URL, name: String? = nil, knownFingerprints: Set<String>? = nil) throws -> ImportResult {
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
         let fm = FileManager.default
@@ -165,7 +193,8 @@ enum LibraryDisk {
             hasher.update(data: Data(SHA256.hash(data: try Data(contentsOf: file.url, options: .mappedIfSafe))))
         }
         let fingerprint = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        if try fingerprints(in: libraryURL).contains(fingerprint) { return .duplicate }
+        let existing = try knownFingerprints ?? fingerprints(in: libraryURL)
+        if existing.contains(fingerprint) { return .duplicate }
 
         let collectionID = UUID()
         let staging = libraryURL.appendingPathComponent(".import-\(collectionID.uuidString)")
@@ -178,16 +207,17 @@ enum LibraryDisk {
             try fm.createDirectory(at: copiedURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try fm.copyItem(at: file.url, to: copiedURL)
             if markdownExtensions.contains(file.url.pathExtension.lowercased()) {
-                guard let content = String(data: try Data(contentsOf: copiedURL), encoding: .utf8) else {
+                guard String(data: try Data(contentsOf: copiedURL), encoding: .utf8) != nil else {
                     throw ReaderFailure(message: "\(file.path) 不是 UTF-8 文本，请在编辑器中以 UTF-8 保存后导入。")
                 }
-                records.append(DocumentRecord(id: UUID(), title: title(from: content, fallback: file.url.deletingPathExtension().lastPathComponent), relativePath: file.path))
+                records.append(DocumentRecord(id: UUID(), title: DocumentFileName.title(for: file.path), relativePath: file.path))
             }
         }
         let manifest = CollectionManifest(id: collectionID, name: name ?? source.deletingPathExtension().lastPathComponent,
                                           importedAt: Date(), fingerprint: fingerprint, documents: records)
         try JSONEncoder().encode(manifest).write(to: staging.appendingPathComponent(".reader-collection.json"), options: .atomic)
         try fm.moveItem(at: staging, to: destination)
-        return .imported(records.count)
+        let ordered = records.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
+        return .imported(ordered.map { LibraryDocument(record: $0, collection: manifest, rootURL: destination) })
     }
 }

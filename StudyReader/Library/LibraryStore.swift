@@ -1,69 +1,135 @@
 import Foundation
 import SwiftUI
 
-struct ReadingPosition: Codable {
+struct ReadingPosition: Codable, Sendable {
     var anchor: String
     var excerpt: String
     var offset: Double
     var progress: Double
 }
 
-struct LocalReadingState: Codable {
+struct LocalReadingState: Codable, Sendable {
     var favorites: Set<UUID> = []
     var positions: [String: ReadingPosition] = [:]
     var lastOpened: [String: Date] = [:]
 }
 
 @MainActor final class LibraryStore: ObservableObject {
-    @Published private(set) var documents: [LibraryDocument] = [] { didSet { rebuildIndexes() } }
-    @Published private(set) var organization = LibraryOrganization() { didSet { rebuildIndexes() } }
+    @Published private(set) var documents: [LibraryDocument] = []
+    @Published private(set) var organization = LibraryOrganization()
+    @Published private(set) var isLoading = true
     /// Reading state is not `@Published`: scroll saves arrive several times a second and most of
     /// them change nothing the shelf draws. Notifications are sent explicitly instead.
     private(set) var state = LocalReadingState()
     @Published var isImporting = false
+    @Published private(set) var isDeleting = false
+    @Published private(set) var isUpdating = false
     @Published var errorMessage: String?
     @Published var notice: String?
+    @Published private(set) var syncConnection: SyncConnection?
+    @Published private(set) var isSyncing = false
+    @Published private(set) var isConnecting = false
+    @Published private(set) var syncStatus = "未连接资料库"
+    @Published private(set) var syncIssue: String?
+    @Published private(set) var lastSyncCheck: Date?
+    private var isSyncInstalling = false
+    private var syncEngine: LibrarySyncEngine?
+    private var syncAccess: SyncFolderAccess?
+    private var syncDebounce: Task<Void, Never>?
+    private var syncPoll: Task<Void, Never>?
+    private var syncRequested = false
+    private var syncSceneActive = true
     private(set) var isReadOnly = false
     let libraryURL: URL
+    let content = LibraryContent()
+    let searchEngine = LibrarySearchEngine()
     private let stateURL: URL
     private let organizationURL: URL
     private var pendingSave: DispatchWorkItem?
+    private var hasLoaded = false
+    private let rootURL: URL
+    private let seedSamples: Bool
+    private let automaticSync: Bool
+    private var loadTask: Task<Snapshot, Error>?
+    private struct Snapshot: Sendable {
+        var documents: [LibraryDocument]
+        var organization: LibraryOrganization
+        var state: LocalReadingState
+    }
     private let saveQueue = DispatchQueue(label: "com.personal.studyreader.reading-state", qos: .utility)
 
     // Derived views of the library. Rebuilt only when documents or folders change, because the
     // shelf reads them on every render pass and the reader publishes while scrolling.
     private(set) var revision = 0
+    private(set) var contentRevision = 0
     private var documentIndex: [UUID: LibraryDocument] = [:]
-    private var sortedFolders: [LibraryFolder] = []
     private var folderByFilter: [String: LibraryFolder] = [:]
     private var folderOrderByID: [UUID: [UUID]] = [:]
     private var folderNameByDocument: [UUID: String] = [:]
     private var cachedRoots: [String: URL] = [:]
-    private struct VisibleKey: Equatable { var revision: Int; var filter: String?; var search: String }
+    private struct VisibleKey: Equatable { var revision: Int; var filter: String?; var searchToken: UUID? }
     private var visibleCache: (key: VisibleKey, value: [LibraryDocument])?
 
-    init(rootURL: URL? = nil, seedSamples: Bool = true) {
+    init(rootURL: URL? = nil, seedSamples: Bool = true, automaticSync: Bool = true) {
         let root = rootURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("StudyReader", isDirectory: true)
+        self.rootURL = root
+        self.seedSamples = seedSamples
+        self.automaticSync = automaticSync
         libraryURL = root.appendingPathComponent("Collections", isDirectory: true)
         stateURL = root.appendingPathComponent("reading-state.json")
         organizationURL = root.appendingPathComponent("library-organization.json")
+    }
+
+    /// No disk I/O in init: all windows share one initial metadata load.
+    func loadIfNeeded() async {
+        guard !hasLoaded else { return }
+        let task: Task<Snapshot, Error>
+        if let existing = loadTask { task = existing }
+        else {
+            let libraryURL = libraryURL, stateURL = stateURL, organizationURL = organizationURL
+            let seeded = rootURL.appendingPathComponent(".samples-installed")
+            let examples = seedSamples ? Bundle.main.resourceURL?.appendingPathComponent("samples") : nil
+            let root = rootURL
+            task = Task.detached(priority: .userInitiated) {
+                try SyncInstaller.recover(in: root)
+                var documents = try LibraryDisk.loadMetadata(from: libraryURL)
+                var state = FileManager.default.fileExists(atPath: stateURL.path)
+                    ? try JSONDecoder().decode(LocalReadingState.self, from: Data(contentsOf: stateURL)) : LocalReadingState()
+                if let examples, !FileManager.default.fileExists(atPath: seeded.path) {
+                    if case .imported(let added) = try LibraryDisk.importItem(at: examples, into: libraryURL, name: "开始阅读",
+                        knownFingerprints: Set(documents.map { $0.collection.fingerprint })) {
+                        documents.append(contentsOf: added)
+                    }
+                    try Data().write(to: seeded, options: .atomic)
+                }
+                let organization = try LibraryOrganization.load(from: organizationURL, documents: documents)
+                try SyncInstaller.restoreAliases(in: &state, root: root)
+                let validIDs = Set(documents.map(\.id))
+                state.favorites.formIntersection(validIDs)
+                let validKeys = Set(validIDs.map(\.uuidString))
+                state.positions = state.positions.filter { validKeys.contains($0.key) }
+                state.lastOpened = state.lastOpened.filter { validKeys.contains($0.key) }
+                return Snapshot(documents: documents, organization: organization, state: state)
+            }
+            loadTask = task
+        }
         do {
-            documents = try LibraryDisk.load(from: libraryURL)
-            if FileManager.default.fileExists(atPath: stateURL.path) {
-                state = try JSONDecoder().decode(LocalReadingState.self, from: Data(contentsOf: stateURL))
-            }
-            let seeded = root.appendingPathComponent(".samples-installed")
-            if seedSamples, !FileManager.default.fileExists(atPath: seeded.path), let examples = Bundle.main.resourceURL?.appendingPathComponent("samples") {
-                _ = try LibraryDisk.importItem(at: examples, into: libraryURL, name: "开始阅读")
-                try Data().write(to: seeded, options: .atomic)
-                documents = try LibraryDisk.load(from: libraryURL)
-            }
-            organization = try LibraryOrganization.load(from: organizationURL, documents: documents)
+            let snapshot = try await task.value
+            guard !hasLoaded else { return }
+            state = snapshot.state
+            documents = snapshot.documents
+            organization = snapshot.organization
+            contentRevision &+= 1
+            rebuildIndexes()
         } catch {
+            guard !hasLoaded else { return }
             isReadOnly = true
             errorMessage = "资料库读取失败，已保留原文件并暂停写入。\n\(error.localizedDescription)"
         }
-        rebuildIndexes()
+        hasLoaded = true
+        isLoading = false
+        loadTask = nil
+        if !isReadOnly { await restoreSyncConnection() }
     }
 
     private func rebuildIndexes() {
@@ -71,8 +137,7 @@ struct LocalReadingState: Codable {
         visibleCache = nil
         documentIndex = Dictionary(documents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         cachedRoots = Dictionary(documents.map { ($0.collection.id.uuidString, $0.rootURL) }, uniquingKeysWith: { first, _ in first })
-        sortedFolders = organization.folders.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        folderByFilter = Dictionary(sortedFolders.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { first, _ in first })
+        folderByFilter = Dictionary(organization.folders.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { first, _ in first })
         folderNameByDocument = [:]
         folderNameByDocument.reserveCapacity(documents.count)
         folderOrderByID = [:]
@@ -83,8 +148,8 @@ struct LocalReadingState: Codable {
         }
     }
 
-    var collections: [LibraryFolder] { sortedFolders }
-    var canOrganize: Bool { !isReadOnly && !isImporting }
+    var collections: [LibraryFolder] { organization.folders }
+    var canOrganize: Bool { hasLoaded && !isReadOnly && !isImporting && !isDeleting && !isUpdating && !isSyncInstalling && !isConnecting }
     var roots: [String: URL] { cachedRoots }
     func document(id: UUID?) -> LibraryDocument? { id.flatMap { documentIndex[$0] } }
     func folder(matching filter: String?) -> LibraryFolder? { filter.flatMap { folderByFilter[$0] } }
@@ -98,15 +163,15 @@ struct LocalReadingState: Codable {
 
     /// The shelf asks for this list from several places in one render pass, so the answer is kept
     /// until something it depends on actually changes.
-    func visibleDocuments(filter: String?, search: String) -> [LibraryDocument] {
-        let key = VisibleKey(revision: revision, filter: filter, search: search)
+    func visibleDocuments(filter: String?, matching matches: Set<UUID>? = nil, searchToken: UUID? = nil) -> [LibraryDocument] {
+        let key = VisibleKey(revision: revision, filter: filter, searchToken: searchToken)
         if let visibleCache, visibleCache.key == key { return visibleCache.value }
         let folderID = folder(matching: filter)?.id
         var result = orderedDocuments(in: folderID).filter { document in
             let inGroup = folderID != nil || filter == "all" || filter == nil
                 || (filter == "favorites" && state.favorites.contains(document.id))
                 || (filter == "recent" && state.lastOpened[document.id.uuidString] != nil)
-            return inGroup && document.matches(search)
+            return inGroup && (matches?.contains(document.id) ?? true)
         }
         if filter == "recent" {
             result.sort { (state.lastOpened[$0.id.uuidString] ?? .distantPast) > (state.lastOpened[$1.id.uuidString] ?? .distantPast) }
@@ -120,6 +185,25 @@ struct LocalReadingState: Codable {
         let id = try updated.createFolder(named: name)
         try commitOrganization(updated)
         return id
+    }
+    func renameFolder(_ id: UUID, to name: String, expectedName: String? = nil) throws {
+        guard let current = folderByFilter[id.uuidString] else {
+            throw ReaderFailure(message: "资料夹不存在，请重新选择。")
+        }
+        guard expectedName == nil || current.name == expectedName else {
+            throw ReaderFailure(message: "资料夹名称已在其他窗口修改，请重新打开后再试。")
+        }
+        var updated = organization
+        try updated.renameFolder(id, to: name)
+        guard updated != organization else { return }
+        try commitOrganization(updated)
+        notice = "资料夹已重命名为「\(folderByFilter[id.uuidString]?.name ?? name)」"
+    }
+    func reorderFolders(_ ids: [UUID], visibleIDs: [UUID], at index: Int) throws {
+        var updated = organization
+        try updated.reorderFolders(ids, visibleIDs: visibleIDs, at: index)
+        guard updated != organization else { return }
+        try commitOrganization(updated)
     }
     func moveDocuments(_ ids: [UUID], to folderID: UUID) throws {
         var updated = organization
@@ -135,25 +219,100 @@ struct LocalReadingState: Codable {
         guard canOrganize else { throw ReaderFailure(message: "资料库正在处理其他操作，请稍后重试。") }
         try updated.save(to: organizationURL)
         organization = updated
+        rebuildIndexes()
+        scheduleSync()
+    }
+
+    func deleteDocument(_ id: UUID) async throws {
+        guard canOrganize else { throw ReaderFailure(message: "资料库正在处理其他操作，请稍后重试。") }
+        guard let document = documentIndex[id] else { throw ReaderFailure(message: "这篇文章已不存在。") }
+        isDeleting = true
+        defer { isDeleting = false }
+        let result = try await Task.detached(priority: .userInitiated) { try LibraryDisk.deleteDocument(document) }.value
+        let remaining = documents.filter { $0.id != id }.map { existing in
+            existing.collection.id == result.collection.id
+                ? LibraryDocument(record: existing.record, collection: result.collection, rootURL: existing.rootURL) : existing
+        }
+        var updated = organization
+        updated.reconcile(with: remaining)
+        state.favorites.remove(id)
+        state.positions.removeValue(forKey: id.uuidString)
+        state.lastOpened.removeValue(forKey: id.uuidString)
+        documents = remaining
+        organization = updated
+        contentRevision &+= 1
+        rebuildIndexes()
+        flush()
+        await content.remove(id)
+        notice = "已删除「\(document.title)」"
+        if let cleanupError = result.cleanupError { errorMessage = cleanupError }
+        // Deletion is already committed in the package. Keep the visible shelf consistent even
+        // if saving the secondary folder/order record fails; launch will reconcile it again.
+        let savedOrganization = updated, url = organizationURL
+        do { try await Task.detached { try savedOrganization.save(to: url) }.value }
+        catch {
+            isReadOnly = true
+            throw ReaderFailure(message: "文章已删除，但整理记录未能保存，已暂停写入。请重新打开 App。\n\(error.localizedDescription)")
+        }
+        scheduleSync()
     }
 
     func position(for id: UUID) -> ReadingPosition? { state.positions[id.uuidString] }
+
+    func saveMarkdown(_ markdown: String, for document: LibraryDocument, originalMarkdown: String) async throws {
+        try await updateDocument(document) {
+            try LibraryDisk.saveMarkdown(markdown, for: document, originalMarkdown: originalMarkdown)
+        }
+        notice = "已保存文章"
+    }
+
+    func renameDocument(_ document: LibraryDocument, to name: String) async throws {
+        try await updateDocument(document) { try LibraryDisk.renameDocument(document, to: name) }
+        notice = "已重命名为「\(documentIndex[document.id]?.title ?? name)」"
+    }
+
+    private func updateDocument(_ document: LibraryDocument,
+                                operation: @escaping @Sendable () throws -> CollectionManifest) async throws {
+        guard canOrganize else { throw ReaderFailure(message: "资料库正在处理其他操作，请稍后重试。") }
+        guard documentIndex[document.id]?.record == document.record else {
+            throw ReaderFailure(message: "文章已发生变化。请先保留草稿，重新打开后再试。")
+        }
+        isUpdating = true
+        defer { isUpdating = false }
+        let manifest: CollectionManifest
+        do { manifest = try await Task.detached(priority: .userInitiated, operation: operation).value }
+        catch {
+            if error is LibraryUpdateFailure { isReadOnly = true }
+            throw error
+        }
+        // Evict before publishing. A reader loading the new revision must never see old text.
+        await content.remove(document.id)
+        let records = Dictionary(uniqueKeysWithValues: manifest.documents.map { ($0.id, $0) })
+        documents = documents.map { existing in
+            guard existing.collection.id == manifest.id, let record = records[existing.id] else { return existing }
+            return LibraryDocument(record: record, collection: manifest, rootURL: existing.rootURL)
+        }
+        contentRevision &+= 1
+        rebuildIndexes()
+        scheduleSync()
+    }
+
     func opened(_ id: UUID) {
-        guard !isReadOnly else { return }
+        guard hasLoaded, !isReadOnly, documentIndex[id] != nil else { return }
         objectWillChange.send()
         state.lastOpened[id.uuidString] = Date()
         invalidateDerivedState()
         scheduleSave()
     }
     func toggleFavorite(_ id: UUID) {
-        guard !isReadOnly else { return }
+        guard hasLoaded, !isReadOnly, documentIndex[id] != nil else { return }
         objectWillChange.send()
         if state.favorites.contains(id) { state.favorites.remove(id) } else { state.favorites.insert(id) }
         invalidateDerivedState()
         flush()
     }
     func updatePosition(_ position: ReadingPosition, id: UUID) {
-        guard !isReadOnly, position.offset.isFinite, position.progress.isFinite else { return }
+        guard hasLoaded, !isReadOnly, documentIndex[id] != nil, position.offset.isFinite, position.progress.isFinite else { return }
         let key = id.uuidString
         // The shelf only draws a thin progress bar, so redraw when the drawn value moves, not on
         // every scroll tick the reader reports.
@@ -180,7 +339,7 @@ struct LocalReadingState: Codable {
     private func writeState(waiting: Bool) {
         pendingSave?.cancel()
         pendingSave = nil
-        guard !isReadOnly else { return }
+        guard hasLoaded, !isReadOnly else { return }
         let url = stateURL
         let data: Data
         do { data = try JSONEncoder().encode(state) }
@@ -196,33 +355,230 @@ struct LocalReadingState: Codable {
     }
 
     func importItems(_ urls: [URL], intoFolderID: UUID? = nil) async {
-        guard !isReadOnly, !isImporting else { return }
+        await loadIfNeeded()
+        guard canOrganize else { return }
         isImporting = true
         defer { isImporting = false }
         let destination = libraryURL
-        var imported = 0, duplicate = 0
+        var added: [LibraryDocument] = []
+        var duplicate = 0
+        var fingerprints = Set(documents.map { $0.collection.fingerprint })
         var failures: [String] = []
         for source in urls {
             do {
+                let known = fingerprints
                 let result = try await Task.detached(priority: .userInitiated) {
-                    try LibraryDisk.importItem(at: source, into: destination)
+                    try LibraryDisk.importItem(at: source, into: destination, knownFingerprints: known)
                 }.value
                 switch result {
-                case .imported(let count): imported += count
+                case .imported(let incoming):
+                    added.append(contentsOf: incoming)
+                    fingerprints.formUnion(incoming.map { $0.collection.fingerprint })
                 case .duplicate: duplicate += 1
                 }
             } catch { failures.append("\(source.lastPathComponent)：\(error.localizedDescription)") }
         }
         do {
-            let loaded = try await Task.detached { try LibraryDisk.load(from: destination) }.value
-            var updated = organization
-            updated.reconcile(with: loaded, newDocumentsFolderID: intoFolderID)
-            try updated.save(to: organizationURL)
-            documents = loaded
-            organization = updated
+            if !added.isEmpty {
+                let loaded = documents + added
+                var updated = organization
+                updated.reconcile(with: loaded, newDocumentsFolderID: intoFolderID)
+                let organizationToSave = updated, url = organizationURL
+                try await Task.detached { try organizationToSave.save(to: url) }.value
+                documents = loaded
+                organization = updated
+                contentRevision &+= 1
+                rebuildIndexes()
+            }
         }
-        catch { failures.append(error.localizedDescription) }
-        notice = "已导入 \(imported) 篇" + (duplicate > 0 ? "，跳过 \(duplicate) 份重复资料" : "")
+        catch {
+            // Imported packages are already committed to disk. Keep the current shelf intact
+            // and prevent another import from using its now-incomplete fingerprint snapshot.
+            isReadOnly = true
+            failures.append("资料文件已保留，但整理记录未能保存，已暂停写入。重新打开 App 后会重新读取资料库。\n\(error.localizedDescription)")
+        }
+        notice = "已导入 \(added.count) 篇" + (duplicate > 0 ? "，跳过 \(duplicate) 份重复资料" : "")
         if !failures.isEmpty { errorMessage = failures.joined(separator: "\n") }
+        scheduleSync()
     }
+
+    private var connectionURL: URL { rootURL.appendingPathComponent("sync-connection.json") }
+
+    private func makeSyncAccess(_ url: URL) -> SyncFolderAccess {
+        SyncFolderAccess(url: url) { [weak self] in
+            Task { @MainActor in self?.scheduleSync(after: 2) }
+        }
+    }
+
+    private func restoreSyncConnection() async {
+        let url = connectionURL, root = rootURL
+        do {
+            guard FileManager.default.fileExists(atPath: url.path) else { return }
+            let connection = try await Task.detached { try JSONDecoder().decode(SyncConnection.self, from: Data(contentsOf: url)) }.value
+            syncConnection = connection
+            let resolved = try SyncFolderAccess.resolve(connection.bookmark)
+            let access = makeSyncAccess(resolved.url)
+            if resolved.stale {
+                var refreshed = connection
+                refreshed.bookmark = try SyncFolderAccess.bookmark(for: resolved.url)
+                try SyncFolderIO.encoder.encode(refreshed).write(to: url, options: .atomic)
+                syncConnection = refreshed
+            }
+            syncEngine = try await Task.detached { try LibrarySyncEngine(root: root, libraryID: connection.libraryID) }.value
+            syncAccess?.close()
+            syncAccess = access
+            syncStatus = "等待检查资料库"
+            startSyncPolling()
+            scheduleSync(after: 0)
+        } catch {
+            syncStatus = "需要重新连接"
+            syncIssue = "无法恢复资料库访问权限，请重新选择原来的资料库文件夹。\n\(error.localizedDescription)"
+        }
+    }
+
+    func connectSyncFolder(_ url: URL, create: Bool) async {
+        await loadIfNeeded()
+        guard canOrganize, !isSyncing else { return }
+        isConnecting = true
+        syncIssue = nil
+        syncStatus = "正在连接资料库…"
+        flush()
+        let root = rootURL
+        let access = makeSyncAccess(url)
+        do {
+            let header = try await Task.detached { try SyncFolderIO.connect(at: url, create: create, localRoot: root) }.value
+            if let connected = syncConnection, header.id != connected.libraryID {
+                throw ReaderFailure(message: "请选择原来的资料库。更换资料库前，请先断开当前连接。")
+            }
+            _ = try await Task.detached { try SyncInstaller.backupBeforeConnecting(root: root) }.value
+            let connection = SyncConnection(libraryID: header.id, bookmark: try SyncFolderAccess.bookmark(for: url), folderName: url.lastPathComponent)
+            let engine = try await Task.detached { try LibrarySyncEngine(root: root, libraryID: header.id) }.value
+            try SyncFolderIO.encoder.encode(connection).write(to: connectionURL, options: .atomic)
+            syncAccess?.close()
+            syncAccess = access
+            syncConnection = connection
+            syncEngine = engine
+            syncStatus = "资料库已连接"
+            notice = "已连接「\(url.lastPathComponent)」，本机资料已备份"
+        } catch {
+            access.close()
+            syncStatus = syncConnection == nil ? "未连接资料库" : "连接未完成"
+            if error is SyncPending { syncIssue = "资料库尚未下载完成，请在「文件」或 Finder 中下载该文件夹后再连接。" }
+            else { syncIssue = error.localizedDescription }
+        }
+        isConnecting = false
+        if syncEngine != nil {
+            startSyncPolling()
+            await synchronize()
+        }
+    }
+
+    func disconnectSyncFolder() {
+        guard !isSyncing, !isConnecting else { return }
+        do {
+            if FileManager.default.fileExists(atPath: connectionURL.path) { try FileManager.default.removeItem(at: connectionURL) }
+            syncDebounce?.cancel()
+            syncPoll?.cancel()
+            syncDebounce = nil
+            syncPoll = nil
+            syncAccess?.close()
+            syncAccess = nil
+            syncEngine = nil
+            syncConnection = nil
+            syncIssue = nil
+            lastSyncCheck = nil
+            syncStatus = "未连接资料库"
+            notice = "已断开连接，已下载的资料和本机修改均已保留"
+        } catch { syncIssue = error.localizedDescription }
+    }
+
+    func syncSceneChanged(isActive: Bool) {
+        syncSceneActive = isActive
+        if isActive {
+            startSyncPolling()
+            scheduleSync(after: 0)
+        } else {
+            syncPoll?.cancel()
+            syncPoll = nil
+            syncDebounce?.cancel()
+            syncDebounce = nil
+        }
+    }
+
+    private func startSyncPolling() {
+        guard automaticSync, syncSceneActive, syncEngine != nil, syncPoll == nil else { return }
+        syncPoll = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(20)) } catch { return }
+                await self?.synchronize()
+            }
+        }
+    }
+
+    private func scheduleSync(after seconds: Double = 1) {
+        guard automaticSync, syncSceneActive, syncEngine != nil, !isReadOnly else { return }
+        if isSyncing { syncRequested = true; return }
+        syncDebounce?.cancel()
+        syncDebounce = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
+            await self?.synchronize()
+        }
+    }
+
+    func synchronize() async {
+        guard !isSyncing else { syncRequested = true; return }
+        guard canOrganize, let engine = syncEngine, let access = syncAccess else { return }
+        isSyncing = true
+        syncRequested = false
+        syncStatus = "正在检查并同步…"
+        syncIssue = nil
+        defer {
+            isSyncInstalling = false
+            isSyncing = false
+            if syncRequested { scheduleSync(after: 2) }
+        }
+        do {
+            // Fetch before the first local capture so identical imported packages can be
+            // recognized without replacing the user's current local library.
+            if await engine.needsBootstrap() { _ = try await engine.exchange(with: access.url) }
+            guard canOrganize else { syncRequested = true; return }
+            isSyncInstalling = true
+            try await engine.prepare(documents: documents, organization: organization)
+            let capturedRevision = revision
+            isSyncInstalling = false
+            let exchange = try await engine.exchange(with: access.url)
+            guard revision == capturedRevision, canOrganize else { syncRequested = true; return }
+            isSyncInstalling = true
+            flush()
+            if let installed = try await engine.install(exchange.projection, documents: documents, organization: organization) {
+                let changed = installed.documents.filter { current in
+                    documentIndex[current.id]?.record != current.record || documentIndex[current.id]?.rootURL != current.rootURL
+                }.map(\.id)
+                let removed = Set(documents.map(\.id)).subtracting(installed.documents.map(\.id))
+                for id in Set(changed).union(removed) { await content.remove(id) }
+                SyncInstaller.remap(&state, aliases: installed.aliases)
+                documents = installed.documents
+                organization = installed.organization
+                let validIDs = Set(documents.map(\.id)), validKeys = Set(documents.map { $0.id.uuidString })
+                state.favorites.formIntersection(validIDs)
+                state.positions = state.positions.filter { validKeys.contains($0.key) }
+                state.lastOpened = state.lastOpened.filter { validKeys.contains($0.key) }
+                if !changed.isEmpty || !removed.isEmpty { contentRevision &+= 1 }
+                rebuildIndexes()
+                flush()
+            }
+            lastSyncCheck = Date()
+            syncStatus = exchange.waitingForUpload ? "等待 iCloud 上传" : "资料库已更新"
+        } catch is SyncPending {
+            syncStatus = "等待 iCloud 下载"
+        } catch is CancellationError {
+            syncStatus = "稍后继续同步"
+        } catch {
+            if error is LibraryUpdateFailure { isReadOnly = true; errorMessage = error.localizedDescription }
+            syncStatus = "同步暂未完成"
+            syncIssue = "本机资料已保留，将在下次检查时重试。\n\(error.localizedDescription)"
+        }
+    }
+
+    deinit { syncPoll?.cancel(); syncDebounce?.cancel(); syncAccess?.close() }
 }
