@@ -13,11 +13,26 @@ struct OutlineEntry: Identifiable, Decodable {
     let level: Int
 }
 
+enum ReaderPageWidth: String, CaseIterable {
+    case standard, wide, full
+
+    var title: String {
+        switch self {
+        case .standard: return "标准"
+        case .wide: return "加宽"
+        case .full: return "铺满"
+        }
+    }
+}
+
 struct ReaderPreferences {
     var fontSize: Double
     var theme: String
     var foldAnswers: Bool
-    var dictionary: [String: Any] { ["fontSize": fontSize, "theme": theme, "foldAnswers": foldAnswers] }
+    var pageWidth: ReaderPageWidth = .standard
+    var dictionary: [String: Any] {
+        ["fontSize": fontSize, "theme": theme, "foldAnswers": foldAnswers, "pageWidth": pageWidth.rawValue]
+    }
 }
 
 final class ReaderAssets: NSObject, WKURLSchemeHandler {

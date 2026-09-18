@@ -10,6 +10,9 @@ struct ReaderView: View {
     @AppStorage("reader.fontSize") private var fontSize = 18.0
     @AppStorage("reader.theme") private var theme = "system"
     @AppStorage("reader.foldAnswers") private var foldAnswers = false
+    #if os(macOS)
+    @AppStorage("reader.pageWidth") private var pageWidth: ReaderPageWidth = .standard
+    #endif
     @State private var showOutline = false
     @State private var showPreferences = false
     @State private var showFind = false
@@ -35,7 +38,13 @@ struct ReaderView: View {
     /// while no bar is there.
     private var shelfBannerShown: Bool { library.isImporting || library.isExporting || library.isDeleting || library.notice != nil }
 
-    private var preferences: ReaderPreferences { ReaderPreferences(fontSize: fontSize, theme: theme, foldAnswers: foldAnswers) }
+    private var preferences: ReaderPreferences {
+        var preferences = ReaderPreferences(fontSize: fontSize, theme: theme, foldAnswers: foldAnswers)
+        #if os(macOS)
+        preferences.pageWidth = pageWidth
+        #endif
+        return preferences
+    }
     var body: some View {
         VStack(spacing: 0) {
             if hasLoadedDocument, library.isRemoteProgress(for: document.id),
@@ -144,6 +153,9 @@ struct ReaderView: View {
         .onChange(of: fontSize) { _, _ in controller.preferences(preferences) }
         .onChange(of: theme) { _, _ in controller.preferences(preferences) }
         .onChange(of: foldAnswers) { _, _ in controller.preferences(preferences) }
+        #if os(macOS)
+        .onChange(of: pageWidth) { _, _ in controller.preferences(preferences) }
+        #endif
         .onChange(of: findText) { _, value in controller.find(value) }
         .fileExporter(isPresented: $showExport, document: exportPackage.map { LibraryExportDocument(package: $0) } ?? LibraryExportDocument(markdown: markdown ?? ""),
                       contentType: exportPackage == nil ? .plainText : .folder,
@@ -202,6 +214,17 @@ struct ReaderView: View {
         VStack(alignment: .leading, spacing: 20) {
             Text("阅读设置").font(.headline)
             Stepper(value: $fontSize, in: 14...28, step: 1) { Text("字号 \(Int(fontSize))") }
+            #if os(macOS)
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("页面宽度", selection: $pageWidth) {
+                    ForEach(ReaderPageWidth.allCases, id: \.self) { width in
+                        Text(width.title).tag(width)
+                    }
+                }.pickerStyle(.segmented)
+                Text("选择“铺满”可随窗口扩展，减少两侧留白。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            #endif
             Picker("外观", selection: $theme) {
                 Text("自动").tag("system")
                 Text("浅色").tag("light")

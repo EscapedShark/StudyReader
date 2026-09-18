@@ -17,6 +17,75 @@ final class ReadingProgressTests: XCTestCase {
         }
     }
 
+    #if os(macOS)
+    @MainActor func testPageWidthReflowsWithoutLosingTheParagraphAndFitsResizedWindows() async throws {
+        let record = DocumentRecord(id: UUID(), title: "页面宽度", relativePath: "width.md")
+        let collection = CollectionManifest(id: UUID(), name: "Test", importedAt: Date(), fingerprint: "test", documents: [record])
+        let document = LibraryDocument(record: record, collection: collection, rootURL: FileManager.default.temporaryDirectory)
+        let markdown = "# 页面宽度\n\n" + (0..<60).map {
+            "## 第 \($0) 节\n\n" + String(repeating: "这是一段用于验证页面宽度变化后仍保持原阅读段落的正文。", count: 14)
+        }.joined(separator: "\n\n")
+        let reader = ReaderController()
+        reader.webView.frame = CGRect(x: 0, y: 0, width: 1600, height: 700)
+        var preferences = ReaderPreferences(fontSize: 18, theme: "light", foldAnswers: false)
+        reader.display(document, markdown: markdown, position: nil, preferences: preferences, roots: [:])
+        try await waitForReader(reader)
+
+        func layout() async throws -> [String: Any] {
+            var result: [String: Any]?
+            for _ in 0..<100 {
+                result = try await reader.webView.evaluateJavaScript("""
+                    (() => {
+                        const saved = window.Reader.save();
+                        if (!saved) return null;
+                        const root = document.documentElement;
+                        return {width: document.querySelector('article').getBoundingClientRect().width,
+                            viewport: root.clientWidth, overflow: root.scrollWidth > root.clientWidth + 1,
+                            anchor: saved.position.anchor, offset: saved.position.offset,
+                            sequence: saved.activity?.sequence ?? 0};
+                    })()
+                    """) as? [String: Any]
+                if result != nil { break }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            return try XCTUnwrap(result, "Page width restoration did not settle")
+        }
+
+        let initial = try await layout()
+        XCTAssertEqual(try XCTUnwrap(initial["width"] as? Double), 840, accuracy: 1)
+        _ = try await reader.webView.evaluateJavaScript("dispatchEvent(new WheelEvent('wheel')); document.querySelectorAll('p')[25].scrollIntoView()")
+        let before = try await layout()
+        XCTAssertGreaterThan(try XCTUnwrap(before["sequence"] as? Int), 0)
+
+        for (width, expected) in [(ReaderPageWidth.wide, 1120.0), (.full, 1600.0), (.standard, 840.0)] {
+            preferences.pageWidth = width
+            reader.preferences(preferences)
+            let after = try await layout()
+            XCTAssertEqual(try XCTUnwrap(after["width"] as? Double), expected, accuracy: 1)
+            XCTAssertEqual(after["anchor"] as? String, before["anchor"] as? String)
+            XCTAssertEqual(try XCTUnwrap(after["offset"] as? Double), try XCTUnwrap(before["offset"] as? Double), accuracy: 0.01)
+            XCTAssertEqual(after["sequence"] as? Int, before["sequence"] as? Int, "Reflow must not count as reading activity")
+            XCTAssertEqual(after["overflow"] as? Bool, false)
+        }
+
+        preferences.pageWidth = .full
+        reader.preferences(preferences)
+        _ = try await layout()
+        reader.reloadReader()
+        try await waitForReader(reader)
+        let reloaded = try await layout()
+        XCTAssertEqual(try XCTUnwrap(reloaded["width"] as? Double), 1600, accuracy: 1, "Recovery must retain the selected width")
+
+        for windowWidth in [480.0, 2000.0] {
+            reader.webView.frame.size.width = windowWidth
+            try await Task.sleep(for: .milliseconds(120))
+            let resized = try await layout()
+            XCTAssertEqual(try XCTUnwrap(resized["width"] as? Double), try XCTUnwrap(resized["viewport"] as? Double), accuracy: 1)
+            XCTAssertEqual(resized["overflow"] as? Bool, false)
+        }
+    }
+    #endif
+
     @MainActor func testProgressSurvivesEmptyColumnDetachAndSwitchingBetweenArticles() async throws {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temp) }

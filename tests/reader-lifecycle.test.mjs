@@ -114,6 +114,29 @@ test('preferences during initial layout preserve the render restoration and late
   assert.equal(f.context.scrollY,600);
 });
 
+test('rapid page width changes preserve the original paragraph while layout is pending',async()=>{
+  const f=fixture();
+  f.window.HTMLElement.prototype.getBoundingClientRect=function(){
+    const width=f.document.documentElement.style.getPropertyValue('--reading-width');
+    const height=width==='none'?100:width==='1120px'?150:200;
+    const index=[...f.document.querySelectorAll('.reading-block')].indexOf(this);
+    return {top:Math.max(0,index)*height-f.context.scrollY,width:600,height};
+  };
+  await f.reader.render(f.payload('A'));
+  f.emit('wheel');
+  f.context.scrollY=1200;
+  const before=f.reader.save();
+  const release=f.gate();
+  const full=f.reader.preferences({...preferences,pageWidth:'full'});
+  const wide=f.reader.preferences({...preferences,pageWidth:'wide'});
+  release();
+  await Promise.all([full,wide]);
+  const after=f.reader.save();
+  assert.equal(after.position.anchor,before.position.anchor);
+  assert.equal(after.position.offset,before.position.offset);
+  assert.equal(after.activity,before.activity,'Changing width is not a new reading action');
+});
+
 test('leaving a column freezes the checkpoint before the WebView layout changes',async()=>{
   const f=fixture();
   await f.reader.render({...f.payload('A'),session:'A-1'});

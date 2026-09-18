@@ -162,6 +162,8 @@ function checkpoint(expectedSession, suspend = false, cachedOnly = false) {
 }
 function applyPreferences(prefs) {
   document.documentElement.style.setProperty('--reading-size', `${prefs.fontSize || 18}px`);
+  const width = prefs.pageWidth === 'full' ? 'none' : prefs.pageWidth === 'wide' ? '1120px' : '840px';
+  document.documentElement.style.setProperty('--reading-width', width);
   document.documentElement.dataset.theme = prefs.theme || 'system';
 }
 /// Formulas keep their MathML rendered only while a screen reader is running; see reader.css.
@@ -263,7 +265,9 @@ window.Reader = {
       return;
     }
     checkpoint();
-    const position = capturePosition();
+    // A second setting change can arrive before the first layout has restored the paragraph.
+    // Keep the original checkpoint instead of capturing the intermediate reflow.
+    const position = restoring && lastPosition ? lastPosition : capturePosition();
     clearIntent();
     restoring = true;
     applyPreferences(prefs);
