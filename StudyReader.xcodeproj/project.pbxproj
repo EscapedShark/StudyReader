@@ -50,9 +50,11 @@
 		E35D3F5A9528E7943F590E6C /* ReadingProgressSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 568AFDC1448DD12524493A33 /* ReadingProgressSync.swift */; };
 		E64C4C3A1FFB29411DB676C3 /* LibraryFolderDeletionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA39BAE7A625FC5D01705B09 /* LibraryFolderDeletionTests.swift */; };
 		E6560487F9B174AD93094DBD /* SyncSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92C9009FD3B073758397B2AE /* SyncSettingsView.swift */; };
+		E6C26F1ED1E26DE7CCF5B6F9 /* LibraryNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5E729EA98867A4CF200CABA /* LibraryNavigation.swift */; };
 		E84AF899151E4628CDBFC35E /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32F113AACDE5BDCD5ABC2B26 /* LibraryStore.swift */; };
 		EE5EFFABF45AB06864F0941C /* FolderDrag.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED4D6B619D0D9697F919FE6D /* FolderDrag.swift */; };
 		FD0E838CDC1A707EBC7546E6 /* LibraryEditing.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6DE84D8A63033F49023FD8F /* LibraryEditing.swift */; };
+		FFF027E707F78E439CD0006D /* LibraryNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8370169E395A2B8F8DD186F /* LibraryNavigationTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -112,6 +114,7 @@
 		A076D2AD1063AF324AFCEC56 /* LibraryFolderDeletion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryFolderDeletion.swift; sourceTree = "<group>"; };
 		A1A0046102294315AFFA1073 /* PLAN.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = PLAN.md; sourceTree = "<group>"; };
 		A68D6F286CB9385E98D90B2A /* reader.mjs */ = {isa = PBXFileReference; path = reader.mjs; sourceTree = "<group>"; };
+		A8370169E395A2B8F8DD186F /* LibraryNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryNavigationTests.swift; sourceTree = "<group>"; };
 		AA1E5892FA6A92E926E1C15D /* FileNamingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileNamingTests.swift; sourceTree = "<group>"; };
 		AE07220019FA00542F84626D /* LibraryOrganization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryOrganization.swift; sourceTree = "<group>"; };
 		B1E1B3AF2A4233BAEF2988E8 /* typeset-cache.mjs */ = {isa = PBXFileReference; path = "typeset-cache.mjs"; sourceTree = "<group>"; };
@@ -129,6 +132,7 @@
 		ED4D6B619D0D9697F919FE6D /* FolderDrag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderDrag.swift; sourceTree = "<group>"; };
 		EE247434E0FE59CDA20954BE /* LibrarySearchModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySearchModel.swift; sourceTree = "<group>"; };
 		F0482EE19582C711694FBE7F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		F5E729EA98867A4CF200CABA /* LibraryNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryNavigation.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -137,6 +141,7 @@
 			children = (
 				C1C77800FCC4FA2047115ED6 /* DocumentDrag.swift */,
 				ED4D6B619D0D9697F919FE6D /* FolderDrag.swift */,
+				F5E729EA98867A4CF200CABA /* LibraryNavigation.swift */,
 				C29BBAD8EB9662C54AD6C348 /* LibraryView.swift */,
 				78168AA6C9D06827CBF8A59F /* MacLibraryList.swift */,
 				070DE22F03FD03F28DF5714F /* RenameDocumentSheet.swift */,
@@ -173,6 +178,7 @@
 				DAA98517BF9F1C65391994AB /* LibraryEditingTests.swift */,
 				DA39BAE7A625FC5D01705B09 /* LibraryFolderDeletionTests.swift */,
 				3A3C465E65BAC40A92C7D989 /* LibraryLoadingTests.swift */,
+				A8370169E395A2B8F8DD186F /* LibraryNavigationTests.swift */,
 				2B4F9ED818BC7F09663998FE /* LibraryOrganizationTests.swift */,
 				BB804BFB6C31F2CEE88D9617 /* LibraryPackageTests.swift */,
 				787D27BA0942E63E37B4FB37 /* LibrarySearchTests.swift */,
@@ -398,6 +404,7 @@
 				D0BC25459E644278CC00A5CA /* LibraryEditingTests.swift in Sources */,
 				E64C4C3A1FFB29411DB676C3 /* LibraryFolderDeletionTests.swift in Sources */,
 				58F16E70D80940014D9925C6 /* LibraryLoadingTests.swift in Sources */,
+				FFF027E707F78E439CD0006D /* LibraryNavigationTests.swift in Sources */,
 				7D11DC86CA98DDCD658343D9 /* LibraryOrganizationTests.swift in Sources */,
 				B90D7A770AC6ED082F874A5A /* LibraryPackageTests.swift in Sources */,
 				A8CD3259DDF5F53CA40663CC /* LibrarySearchTests.swift in Sources */,
@@ -422,6 +429,7 @@
 				773E1962A71301BC9A898E38 /* LibraryDisk.swift in Sources */,
 				FD0E838CDC1A707EBC7546E6 /* LibraryEditing.swift in Sources */,
 				6F33A8DAE2956E945110A1F0 /* LibraryFolderDeletion.swift in Sources */,
+				E6C26F1ED1E26DE7CCF5B6F9 /* LibraryNavigation.swift in Sources */,
 				4952EAE2D241E10286B7ACCC /* LibraryOrganization.swift in Sources */,
 				09AD4A8DEC7FC15A3EA591A8 /* LibraryPackage.swift in Sources */,
 				6E812631DC4CC3A44D33A118 /* LibrarySearchModel.swift in Sources */,

@@ -24,6 +24,9 @@ import SwiftUI
                 .environmentObject(library)
                 .tint(Color(red: 0.18, green: 0.46, blue: 0.39))
                 #if os(macOS)
+                // The split view already reserves the toolbar's safe area. Its automatic
+                // backdrop can extend below that area in full screen and cover the first row.
+                .toolbarBackground(Visibility.hidden, for: .windowToolbar)
                 .onAppear { appDelegate.flushReadingState = { await library.flush() } }
                 #endif
                 .onChange(of: scenePhase) { _, phase in

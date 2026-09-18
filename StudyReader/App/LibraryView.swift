@@ -5,11 +5,10 @@ struct LibraryView: View {
     @EnvironmentObject private var library: LibraryStore
     /// One reader is kept for the whole session. Rebuilding it per article would reload the
     /// offline typesetting bundle and fonts every time the selection changes.
-    @StateObject private var reader = ReaderController()
+    @StateObject private var reader: ReaderController
     @StateObject private var searchModel = LibrarySearchModel()
     @State private var filter: String? = "all"
-    @State private var selectedID: UUID?
-    @State private var selectionRequest = UUID()
+    @StateObject private var navigation: LibraryNavigation
     @State private var search = ""
     @State private var searchRetry = 0
     @State private var showSearchIssues = false
@@ -32,6 +31,12 @@ struct LibraryView: View {
     #endif
     @FocusState private var folderNameFocused: Bool
 
+    @MainActor init(navigation: LibraryNavigation? = nil, reader: ReaderController? = nil) {
+        _navigation = StateObject(wrappedValue: navigation ?? LibraryNavigation())
+        _reader = StateObject(wrappedValue: reader ?? ReaderController())
+    }
+
+    private var selectedID: UUID? { navigation.selectedID }
     private var selectedFolderID: UUID? { library.folder(matching: filter)?.id }
     private var title: String {
         switch filter {
@@ -51,7 +56,7 @@ struct LibraryView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(preferredCompactColumn: $navigation.compactColumn) {
             sidebar
         } content: {
             documentList
@@ -124,9 +129,6 @@ struct LibraryView: View {
                     .font(.callout).padding(10).background(.bar)
             }
         }
-        #if os(macOS)
-        .onAppear { if selectedID == nil { selectedID = visibleDocuments.first?.id } }
-        #endif
         .onChange(of: filter) { _, _ in updateSelection(reset: false, cancelPending: true) }
         // Comparing the library's revision keeps the check off the article list itself, which the
         // reader would otherwise rebuild on every scroll report.
@@ -331,18 +333,25 @@ struct LibraryView: View {
                 } catch { library.errorMessage = error.localizedDescription; return false }
             }, menu: documentMenu, activate: { selectDocument(UUID(uuidString: $0), fromSearchResult: true) })
         #else
-        List(selection: Binding(get: { selectedID }, set: { selectDocument($0, fromSearchResult: true) })) {
+        List {
             ForEach(visibleDocuments) { document in
-                NavigationLink(value: document.id) {
-                    DocumentRow(title: document.title,
-                                isFavorite: library.isFavorite(document.id),
-                                progress: library.position(for: document.id)?.progress ?? 0,
-                                searchHit: search.isEmpty ? nil : searchModel.hits[document.id])
-                        .onDrag { DocumentDrag.provider(for: document.id, title: document.title) }
+                Button {
+                    selectDocument(document.id, fromSearchResult: true)
+                } label: {
+                    HStack {
+                        DocumentRow(title: document.title,
+                                    isFavorite: library.isFavorite(document.id),
+                                    progress: library.position(for: document.id)?.progress ?? 0,
+                                    searchHit: search.isEmpty ? nil : searchModel.hits[document.id])
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                    }.contentShape(Rectangle())
                 }
-                .simultaneousGesture(TapGesture().onEnded {
-                    if selectedID == document.id { selectDocument(document.id, fromSearchResult: true) }
-                })
+                .buttonStyle(.plain)
+                .listRowBackground(selectedID == document.id ? Color.accentColor.opacity(0.12) : nil)
+                .accessibilityHint("打开文章")
+                .onDrag { DocumentDrag.provider(for: document.id, title: document.title) }
                 .contextMenu { documentActions(document) }
             }
             .onInsert(of: filter == "recent" || !library.canOrganize || searchPending ? [] : [DocumentDrag.typeIdentifier]) { index, providers in
@@ -508,32 +517,20 @@ struct LibraryView: View {
         #endif
     }
     private func selectDocument(_ id: UUID?, fromSearchResult: Bool = false) {
-        let request = UUID()
-        selectionRequest = request
         let target = fromSearchResult && !search.isEmpty && !searchPending
             ? id.flatMap { searchModel.hits[$0]?.target } : nil
         let selectedSearchRequest = searchRequest
-        guard id != selectedID else {
-            if id != nil { reader.resumeReading() }
-            if fromSearchResult {
-                if let target, let id { reader.revealSearch(target, in: id) }
-                else { reader.clearSearch() }
-            }
-            return
-        }
-        Task {
-            // Await the WebView checkpoint while its current layout still exists. The latest
-            // click wins if another column/article was selected during this round trip.
+        let isCurrentArticle = id == selectedID
+        navigation.select(id, opensReader: fromSearchResult, prepare: {
             await reader.prepareToLeave()
-            guard request == selectionRequest else { return }
             await library.flush()
-            guard request == selectionRequest else { return }
-            reader.clearSearch()
-            // A query can change while the outgoing article is being saved. Finish the user's
-            // article selection, but never apply a location from the obsolete query.
-            if selectedSearchRequest == searchRequest, let target, let id { reader.revealSearch(target, in: id) }
-            selectedID = id
-        }
+        }, activate: {
+            if isCurrentArticle, id != nil { reader.resumeReading() }
+            if !isCurrentArticle || fromSearchResult { reader.clearSearch() }
+            if fromSearchResult, selectedSearchRequest == searchRequest, let target, let id {
+                reader.revealSearch(target, in: id)
+            }
+        })
     }
     @discardableResult private func move(_ ids: [UUID], to folderID: UUID) -> Bool {
         do {
