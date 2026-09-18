@@ -96,14 +96,21 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
     @Published var error: String?
     @Published var formula: String?
     @Published var findFailed = false
+    @Published private(set) var currentSession: String?
+    @Published private(set) var canRetry = false
     let webView: WKWebView
     let assets: ReaderAssets
     /// Carries the article id because a save can land after the reader moved on to the next one.
     var onPosition: ((UUID, ReadingPosition, Date) -> Void)?
     private var ready = false
+    private var suspended = false
+    private var pageGeneration = 0
+    private var pageNavigation: WKNavigation?
+    private var recentTerminations: [Date] = []
     private var payload: [String: Any]?
     private var latestSession: [UUID: String] = [:]
     private var activitySequence: [UUID: Int] = [:]
+    private var pendingSearch: (documentID: UUID, target: ReaderSearchTarget)?
 
     override init() {
         let configuration = WKWebViewConfiguration()
@@ -128,7 +135,7 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
         webView.isInspectable = true
         #endif
         observeAssistiveReading()
-        webView.load(URLRequest(url: URL(string: "reader://app/index.html")!))
+        pageNavigation = webView.load(URLRequest(url: URL(string: "reader://app/index.html")!))
     }
 
     /// KaTeX draws every formula twice: the visible spans and an invisible MathML twin that only a
@@ -173,13 +180,17 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
             data["position"] = value
         }
         payload = data
+        if pendingSearch?.documentID != document.id { pendingSearch = nil }
+        currentSession = session
+        suspended = false
         error = nil
         outline = []
         #if os(iOS)
         applyPaper(for: preferences.theme)
         #endif
         if ready { render() }
-        return session
+        else if canRetry { reloadReader() }
+        return currentSession ?? session
     }
     private func render() {
         guard let payload else { return }
@@ -211,11 +222,28 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
     func scroll(to heading: OutlineEntry) {
         call("window.Reader.scrollToHeading(id)", arguments: ["id": heading.id])
     }
+    func revealSearch(_ target: ReaderSearchTarget, in documentID: UUID) {
+        // Queue before the body finishes loading. A query change can cancel this request even
+        // while ReaderView's older disk-loading task is still in flight.
+        pendingSearch = (documentID, target)
+        if ready && !isLoading { applyPendingSearch() }
+    }
+    func clearSearch() {
+        pendingSearch = nil
+        if ready { call("window.Reader.clearSearch()") }
+    }
+    private func applyPendingSearch() {
+        guard !suspended, let pending = pendingSearch, pending.documentID.uuidString == currentDocumentID,
+              let session = currentSession else { return }
+        pendingSearch = nil
+        call("return await window.Reader.revealSearch(target, session)", arguments: ["target": pending.target.dictionary, "session": session])
+    }
     func savePosition(for documentID: UUID? = nil, session expectedSession: String? = nil, suspend: Bool = false, cachedOnly: Bool = false,
                       completion: @escaping () -> Void = {}) {
         guard ready, let id = currentDocumentID, documentID == nil || documentID?.uuidString == id,
               let session = payload?["session"] as? String,
               expectedSession == nil || expectedSession == session else { completion(); return }
+        if suspend { suspended = true }
         webView.callAsyncJavaScript("return window.Reader.save(session, suspend, cachedOnly)",
                                    arguments: ["session": session, "suspend": suspend, "cachedOnly": cachedOnly], in: nil, in: .page) { [weak self] result in
             if case .success(let value) = result, let value = value as? [String: Any],
@@ -232,6 +260,7 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
         }
     }
     func resumeReading() {
+        suspended = false
         guard ready, let session = payload?["session"] as? String else { return }
         pushAssistiveReading()
         call("window.Reader.resume(session)", arguments: ["session": session])
@@ -251,6 +280,7 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
         onPosition?(documentID, readingPosition, Date(timeIntervalSince1970: timestamp / 1000))
     }
     func find(_ text: String) {
+        guard ready else { return }
         let config = WKFindConfiguration()
         config.wraps = true
         let id = currentDocumentID, session = payload?["session"] as? String
@@ -261,10 +291,12 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
         }
     }
     private func call(_ script: String, arguments: [String: Any] = [:]) {
+        guard ready else { return }
+        let page = pageGeneration
         let documentID = currentDocumentID
         let session = payload?["session"] as? String
         webView.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .page) { [weak self] result in
-            guard self?.currentDocumentID == documentID, self?.payload?["session"] as? String == session else { return }
+            guard self?.pageGeneration == page, self?.currentDocumentID == documentID, self?.payload?["session"] as? String == session else { return }
             if case .failure(let error) = result {
                 self?.error = "阅读组件未能完成操作：\(error.localizedDescription)"
                 self?.isLoading = false
@@ -286,20 +318,77 @@ final class ReaderAssets: NSObject, WKURLSchemeHandler {
             if let value = body["payload"], let data = try? JSONSerialization.data(withJSONObject: value) {
                 outline = (try? JSONDecoder().decode([OutlineEntry].self, from: data)) ?? []
             }
-        case "ready": isLoading = false
+        case "ready":
+            isLoading = false
+            canRetry = false
+            if suspended { call("window.Reader.save(session, true, true)", arguments: ["session": session]) }
+            else { applyPendingSearch() }
         case "error": error = body["payload"] as? String; isLoading = false
         case "formula": formula = body["payload"] as? String
         default: break
         }
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard navigation === pageNavigation else { return }
         ready = true
+        canRetry = false
         render()
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        guard navigation === pageNavigation else { return }
         self.error = error.localizedDescription
         isLoading = false
+        ready = false
+        canRetry = true
     }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        self.webView(webView, didFailProvisionalNavigation: navigation, withError: error)
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        let now = Date()
+        recentTerminations = recentTerminations.filter { now.timeIntervalSince($0) < 60 }
+        recentTerminations.append(now)
+        guard recentTerminations.count <= 3 else {
+            invalidatePage()
+            pageNavigation = nil
+            webView.stopLoading()
+            isLoading = false
+            canRetry = true
+            error = "阅读组件连续退出。阅读位置已保留，请重新加载文章。"
+            return
+        }
+        reloadReader()
+    }
+
+    /// The native payload retains the latest checkpoint even when WebKit disappears. A fresh
+    /// session rejects late callbacks, and restoration itself never creates a reading action.
+    private func invalidatePage() {
+        ready = false
+        pageGeneration &+= 1
+        if let id = currentDocumentID.flatMap(UUID.init(uuidString:)) {
+            let session = UUID().uuidString
+            latestSession[id] = session
+            activitySequence[id] = 0
+            payload?["session"] = session
+            payload?["preferSavedPosition"] = true
+            currentSession = session
+        }
+    }
+    func reloadReader() {
+        invalidatePage()
+        error = nil
+        canRetry = false
+        formula = nil
+        findFailed = false
+        isLoading = payload != nil
+        pageNavigation = webView.load(URLRequest(url: URL(string: "reader://app/index.html")!))
+    }
+    func retryLoading() {
+        recentTerminations.removeAll()
+        reloadReader()
+    }
+
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
         if navigationAction.navigationType == .other, url.scheme == "reader", url.host == "app", url.path == "/index.html" {

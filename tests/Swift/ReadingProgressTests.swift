@@ -77,7 +77,7 @@ final class ReadingProgressTests: XCTestCase {
         _ = try await reader.webView.callAsyncJavaScript("window.webkit.messageHandlers.reader.postMessage({event:'position',documentID:id,session:session,payload:{anchor:'line-0',excerpt:'A',offset:0,progress:0}})",
                                                         arguments: ["id": a.id.uuidString, "session": oldSession], in: nil, contentWorld: .page)
         XCTAssertEqual(try XCTUnwrap(store.position(for: a.id)).progress, saved.progress, accuracy: 0.02)
-        store.flush()
+        await store.flush()
         let reopened = LibraryStore(rootURL: temp.appendingPathComponent("App"), seedSamples: false)
         await reopened.loadIfNeeded()
         XCTAssertEqual(try XCTUnwrap(reopened.position(for: a.id)).progress, saved.progress, accuracy: 0.02)
@@ -150,4 +150,132 @@ final class ReadingProgressTests: XCTestCase {
         await checkpoint(narrow)
         XCTAssertEqual(b.progressUpdate(for: document.id), a.progressUpdate(for: document.id))
     }
+    @MainActor func testTerminatedReaderReloadsLatestPositionAndRejectsOldSession() async throws {
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        let source = temp.appendingPathComponent("Recovery.md")
+        let markdown = "# Recovery\n\n" + (0..<70).map { "## Section \($0)\n\n正文用于恢复位置。" }.joined(separator: "\n\n")
+        try Data(markdown.utf8).write(to: source)
+        let store = LibraryStore(rootURL: temp.appendingPathComponent("App"), seedSamples: false, automaticSync: false)
+        await store.importItems([source])
+        let document = try XCTUnwrap(store.documents.first)
+        let reader = ReaderController()
+        reader.webView.frame = CGRect(x: 0, y: 0, width: 500, height: 650)
+        reader.onPosition = { id, position, readAt in store.updatePosition(position, id: id, readAt: readAt) }
+        reader.display(document, markdown: markdown, position: nil,
+            preferences: ReaderPreferences(fontSize: 22, theme: "dark", foldAnswers: false), roots: store.roots)
+        try await waitForReader(reader)
+        _ = try await reader.webView.evaluateJavaScript("dispatchEvent(new WheelEvent('wheel')); scrollTo(0, (document.documentElement.scrollHeight - innerHeight) * 0.67)")
+        await checkpoint(reader)
+        let update = try XCTUnwrap(store.progressUpdate(for: document.id))
+        let oldSession = try XCTUnwrap(reader.currentSession)
+        // Exercise the public WebKit delegate event, then load the real bundled reader again.
+        reader.webViewWebContentProcessDidTerminate(reader.webView)
+        XCTAssertNotEqual(reader.currentSession, oldSession)
+        XCTAssertTrue(reader.isLoading)
+        try await waitForReader(reader)
+        let restored = try await reader.webView.evaluateJavaScript("window.Reader.save().position.progress") as? Double
+        XCTAssertEqual(try XCTUnwrap(restored), update.position.progress, accuracy: 0.02)
+        let theme = try await reader.webView.evaluateJavaScript("document.documentElement.dataset.theme") as? String
+        XCTAssertEqual(theme, "dark")
+        XCTAssertEqual(store.progressUpdate(for: document.id), update, "Automatic recovery is not a new reading action")
+        _ = try await reader.webView.callAsyncJavaScript("window.webkit.messageHandlers.reader.postMessage({event:'position',documentID:id,session:session,payload:{anchor:'line-0',excerpt:'wrong',offset:0,progress:0},activity:{sequence:999,readAt:Date.now(),position:{anchor:'line-0',excerpt:'wrong',offset:0,progress:0}}})",
+            arguments: ["id": document.id.uuidString, "session": oldSession], in: nil, contentWorld: .page)
+        XCTAssertEqual(store.progressUpdate(for: document.id), update)
+        _ = try await reader.webView.evaluateJavaScript("dispatchEvent(new WheelEvent('wheel')); scrollTo(0, 0)")
+        await checkpoint(reader)
+        XCTAssertEqual(store.position(for: document.id)?.progress, 0)
+        await store.flush()
+    }
+
+    @MainActor func testSearchNavigationQueuesUntilReadyUnfoldsTheMatchAndDoesNotReplayAfterRecovery() async throws {
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        let source = temp.appendingPathComponent("Search.md")
+        let markdown = "---\ntitle: ignored\n---\n# 练习\n\n" +
+            (0..<35).map { "## 第 \($0) 节\n\n背景材料与公式。" }.joined(separator: "\n\n") +
+            "\n\n## 答案\n\n这里的 **Café** 是需要定位的关键词。\n\n## 后续资料\n\n" +
+            String(repeating: "下一段内容。\n\n", count: 15)
+        try Data(markdown.utf8).write(to: source)
+        let store = LibraryStore(rootURL: temp.appendingPathComponent("App"), seedSamples: false, automaticSync: false)
+        await store.importItems([source])
+        let document = try XCTUnwrap(store.documents.first)
+        let results = try await store.searchEngine.search(query: "cafe", documents: store.documents, revision: store.contentRevision)
+        let target = try XCTUnwrap(results.hits[document.id]?.target)
+        XCTAssertNil(store.progressUpdate(for: document.id), "Searching the body is not reading activity")
+        let reader = ReaderController()
+        reader.webView.frame = CGRect(x: 0, y: 0, width: 500, height: 650)
+        reader.onPosition = { id, position, date in store.updatePosition(position, id: id, readAt: date) }
+        // The result can be clicked while ReaderView is still loading the Markdown body.
+        reader.revealSearch(target, in: document.id)
+        reader.display(document, markdown: markdown, position: nil,
+            preferences: ReaderPreferences(fontSize: 18, theme: "light", foldAnswers: true), roots: store.roots)
+        try await waitForReader(reader)
+        for _ in 0..<80 {
+            if store.position(for: document.id)?.progress ?? 0 > 0.5 { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let details = try await reader.webView.evaluateJavaScript("(() => { const mark = document.querySelector('mark.search-highlight'); return {text:mark?.textContent,open:mark?.closest('details')?.open,line:Number(mark?.closest('[data-source-start]')?.dataset.sourceStart),top:mark?.getBoundingClientRect().top}; })()") as? [String: Any]
+        XCTAssertEqual(details?["text"] as? String, "Café")
+        XCTAssertEqual(details?["open"] as? Bool, true)
+        XCTAssertEqual(details?["line"] as? Int, target.sourceLine)
+        XCTAssertGreaterThan(try XCTUnwrap(details?["top"] as? Double), 0)
+        XCTAssertLessThan(try XCTUnwrap(details?["top"] as? Double), 650)
+        XCTAssertGreaterThan(store.position(for: document.id)?.progress ?? 0, 0.5)
+
+        // Clicking an already selected result must jump again without re-rendering its article.
+        let session = reader.currentSession
+        _ = try await reader.webView.evaluateJavaScript("scrollTo(0,0)")
+        reader.revealSearch(target, in: document.id)
+        try await Task.sleep(for: .milliseconds(350))
+        let repeatedScroll = try await reader.webView.evaluateJavaScript("scrollY") as? Double
+        XCTAssertGreaterThan(repeatedScroll ?? 0, 1000)
+        XCTAssertEqual(reader.currentSession, session)
+        reader.clearSearch()
+        let marks = try await reader.webView.evaluateJavaScript("document.querySelectorAll('mark.search-highlight').length") as? Int
+        XCTAssertEqual(marks, 0)
+
+        _ = try await reader.webView.evaluateJavaScript("dispatchEvent(new WheelEvent('wheel'));scrollTo(0,0)")
+        await checkpoint(reader)
+        reader.webViewWebContentProcessDidTerminate(reader.webView)
+        try await waitForReader(reader)
+        let restored = try await reader.webView.evaluateJavaScript("scrollY") as? Double
+        XCTAssertEqual(try XCTUnwrap(restored), 0, accuracy: 1)
+        XCTAssertNil(reader.error)
+    }
+
+    @MainActor func testClearingPendingSearchBeforeBodyLoadPreservesTheSavedPosition() async throws {
+        let reader = ReaderController()
+        let root = FileManager.default.temporaryDirectory
+        let record = DocumentRecord(id: UUID(), title: "Cancelled", relativePath: "Cancelled.md")
+        let collection = CollectionManifest(id: UUID(), name: "Test", importedAt: Date(), fingerprint: "test", documents: [record])
+        let document = LibraryDocument(record: record, collection: collection, rootURL: root)
+        let markdown = (0..<60).map { "第 \($0) 段关键词。" }.joined(separator: "\n\n")
+        reader.revealSearch(ReaderSearchTarget(query: "关键词", matchedText: "关键词", sourceLine: 80), in: document.id)
+        reader.clearSearch()
+        reader.webView.frame = CGRect(x: 0, y: 0, width: 500, height: 650)
+        reader.display(document, markdown: markdown,
+            position: ReadingPosition(anchor: "line-20", excerpt: "第 10 段关键词。", offset: 0, progress: 0.2),
+            preferences: ReaderPreferences(fontSize: 18, theme: "light", foldAnswers: false), roots: [:])
+        try await waitForReader(reader)
+        let savedTop = try await reader.webView.evaluateJavaScript("document.querySelector('[data-anchor=\"line-20\"]').getBoundingClientRect().top") as? Double
+        XCTAssertEqual(try XCTUnwrap(savedTop), 0, accuracy: 1)
+        let matches = try await reader.webView.evaluateJavaScript("document.querySelectorAll('.search-target').length") as? Int
+        XCTAssertEqual(matches, 0)
+    }
+
+    @MainActor func testRepeatedWebProcessTerminationStopsRetryLoopAndAllowsManualRetry() async throws {
+        let reader = ReaderController()
+        // No real process kill is needed to validate the delegate's retry budget.
+        for _ in 0..<4 { reader.webViewWebContentProcessDidTerminate(reader.webView) }
+        XCTAssertTrue(reader.canRetry)
+        XCTAssertFalse(reader.isLoading)
+        XCTAssertNotNil(reader.error)
+        reader.retryLoading()
+        XCTAssertFalse(reader.canRetry)
+        XCTAssertNil(reader.error)
+    }
+
 }

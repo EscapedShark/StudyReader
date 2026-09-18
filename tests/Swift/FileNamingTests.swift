@@ -13,7 +13,7 @@ final class FileNamingTests: XCTestCase {
         let original = try XCTUnwrap(store.documents.first)
         store.toggleFavorite(original.id)
         store.updatePosition(ReadingPosition(anchor: "line-2", excerpt: "内容", offset: 0, progress: 0.6), id: original.id)
-        store.flush()
+        await store.flush()
         let metadataURL = original.rootURL.appendingPathComponent(".reader-collection.json")
         // Missing bodies do not prevent correcting cached heading-based names at startup.
         try FileManager.default.removeItem(at: original.fileURL)

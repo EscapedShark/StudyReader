@@ -29,7 +29,7 @@ final class LibraryEditingTests: XCTestCase {
         store.toggleFavorite(original.id)
         store.opened(original.id)
         store.updatePosition(ReadingPosition(anchor: "anchor", excerpt: "old", offset: 40, progress: 0.4), id: original.id)
-        store.flush()
+        await store.flush()
         let organization = store.organization
         let body = try await store.content.markdown(for: original)
         let previousRevision = store.contentRevision
@@ -100,7 +100,7 @@ final class LibraryEditingTests: XCTestCase {
         XCTAssertEqual(store.document(id: original.id)?.title, "贝叶斯笔记")
         XCTAssertEqual(try LibraryDisk.loadMetadata(from: store.libraryURL).first { $0.id == original.id }?.title, "贝叶斯笔记")
         XCTAssertTrue(FileManager.default.fileExists(atPath: temp.appendingPathComponent("source/lessons/lesson.md").path))
-        store.flush()
+        await store.flush()
         let reopened = LibraryStore(rootURL: temp.appendingPathComponent("App"), seedSamples: false)
         await reopened.loadIfNeeded()
         XCTAssertEqual(reopened.document(id: original.id)?.fileURL, renamed.fileURL)

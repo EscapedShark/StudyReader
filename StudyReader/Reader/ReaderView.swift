@@ -1,18 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct MarkdownExport: FileDocument {
-    static var readableContentTypes: [UTType] { [.plainText] }
-    var text: String
-    init(text: String) { self.text = text }
-    init(configuration: ReadConfiguration) throws {
-        text = String(decoding: configuration.file.regularFileContents ?? Data(), as: UTF8.self)
-    }
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: Data(text.utf8))
-    }
-}
-
 struct ReaderView: View {
     let document: LibraryDocument
     /// Owned by the shelf so switching articles reuses the already-loaded typesetting page.
@@ -27,6 +15,7 @@ struct ReaderView: View {
     @State private var showFind = false
     @State private var findText = ""
     @State private var showExport = false
+    @State private var exportPackage: PreparedLibraryPackage?
     @State private var editDraft: EditDraft?
     @State private var markdown: String?
     @State private var imageSizes: [String: [Int]] = [:]
@@ -44,7 +33,7 @@ struct ReaderView: View {
     /// The shelf pins its import and notice bar to the bottom safe area. Reading past that inset
     /// would slide the article under the bar, so the page only fills the home-indicator strip
     /// while no bar is there.
-    private var shelfBannerShown: Bool { library.isImporting || library.isDeleting || library.notice != nil }
+    private var shelfBannerShown: Bool { library.isImporting || library.isExporting || library.isDeleting || library.notice != nil }
 
     private var preferences: ReaderPreferences { ReaderPreferences(fontSize: fontSize, theme: theme, foldAnswers: foldAnswers) }
     var body: some View {
@@ -98,8 +87,16 @@ struct ReaderView: View {
                     .disabled(!hasLoadedDocument || markdown == nil || !library.canOrganize)
                     Divider()
                     Button("在文章中查找", systemImage: "magnifyingglass") { showFind.toggle() }
-                    Button("导出本文 Markdown", systemImage: "square.and.arrow.up") { showExport = true }
+                    Button("导出本文 Markdown", systemImage: "square.and.arrow.up") { exportPackage = nil; showExport = true }
                         .disabled(!hasLoadedDocument || markdown == nil)
+                    Button("导出本文及附件…", systemImage: "folder.badge.arrow.up") {
+                        Task {
+                            do {
+                                exportPackage = try await library.exportPackage(documentIDs: [document.id], name: document.title)
+                                showExport = true
+                            } catch { library.errorMessage = error.localizedDescription }
+                        }
+                    }.disabled(!hasLoadedDocument || !library.canOrganize)
                 } label: { Label("更多", systemImage: "ellipsis.circle") }
             }
         }
@@ -114,7 +111,9 @@ struct ReaderView: View {
                 async let sizes = library.imageSizes(for: document)
                 let content = try await library.content.markdown(for: document)
                 try Task.checkCancellation()
-                imageSizes = await sizes
+                let measuredSizes = await sizes
+                try Task.checkCancellation()
+                imageSizes = measuredSizes
                 markdown = content
                 loadedRecord = document.record
                 display(content, preferSavedPosition: library.isRemoteProgress(for: document.id))
@@ -129,28 +128,35 @@ struct ReaderView: View {
             findText = ""
             controller.find("")
         }
+        .onChange(of: controller.currentSession) { _, session in
+            if hasLoadedDocument, controller.currentDocumentID == document.id.uuidString { loadedSession = session }
+        }
         .onDisappear {
-            controller.savePosition(for: document.id, session: loadedSession, suspend: true, cachedOnly: true) { library.flush() }
+            controller.savePosition(for: document.id, session: loadedSession, suspend: true, cachedOnly: true) { library.saveForLifecycle() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { controller.resumeReading() }
             else {
                 controller.savePosition(for: document.id, session: loadedSession, suspend: phase == .background,
-                    cachedOnly: phase == .background) { library.flush() }
+                    cachedOnly: phase == .background) { library.saveForLifecycle() }
             }
         }
         .onChange(of: fontSize) { _, _ in controller.preferences(preferences) }
         .onChange(of: theme) { _, _ in controller.preferences(preferences) }
         .onChange(of: foldAnswers) { _, _ in controller.preferences(preferences) }
         .onChange(of: findText) { _, value in controller.find(value) }
-        .fileExporter(isPresented: $showExport, document: MarkdownExport(text: markdown ?? ""), contentType: .plainText,
-                      defaultFilename: document.fileURL.lastPathComponent) { result in
+        .fileExporter(isPresented: $showExport, document: exportPackage.map { LibraryExportDocument(package: $0) } ?? LibraryExportDocument(markdown: markdown ?? ""),
+                      contentType: exportPackage == nil ? .plainText : .folder,
+                      defaultFilename: exportPackage?.name ?? document.fileURL.lastPathComponent) { result in
             if case .failure(let error) = result { library.errorMessage = error.localizedDescription }
+            exportPackage = nil
         }
+        .onChange(of: showExport) { _, shown in if !shown { exportPackage = nil } }
         .sheet(item: $editDraft) { draft in
             ArticleEditor(document: draft.document, markdown: draft.markdown)
         }
         .alert("阅读组件提示", isPresented: Binding(get: { controller.error != nil }, set: { if !$0 { controller.error = nil } })) {
+            if controller.canRetry { Button("重新加载") { controller.retryLoading() } }
             Button("知道了") { controller.error = nil }
         } message: { Text(controller.error ?? "") }
         .sheet(isPresented: Binding(get: { controller.formula != nil }, set: { if !$0 { controller.formula = nil } })) {

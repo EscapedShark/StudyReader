@@ -5,6 +5,8 @@ import Combine
 /// replace newer results, even if a search provider ignores cancellation.
 @MainActor final class LibrarySearchModel: ObservableObject {
     @Published private(set) var matchedIDs: Set<UUID> = []
+    @Published private(set) var hits: [UUID: LibrarySearchHit] = [:]
+    @Published private(set) var issues: [LibrarySearchIssue] = []
     @Published private(set) var isSearching = false
     @Published private(set) var error: String?
     @Published private(set) var resultRevision = 0
@@ -22,8 +24,10 @@ import Combine
         let token = UUID()
         request = token
         error = nil
+        issues = []
         if query.isEmpty {
             matchedIDs = []
+            hits = [:]
             completedQuery = query
             completedCorpusRevision = revision
             isSearching = false
@@ -35,10 +39,12 @@ import Combine
         defer { if request == token { isSearching = false } }
         do {
             try await Task.sleep(nanoseconds: debounceNanoseconds)
-            let matches = try await engine.matches(query: query, documents: documents, revision: revision)
+            let matches = try await engine.search(query: query, documents: documents, revision: revision)
             try Task.checkCancellation()
             guard request == token else { return }
-            matchedIDs = matches
+            hits = matches.hits
+            issues = matches.issues
+            matchedIDs = Set(matches.hits.keys)
             completedQuery = query
             completedCorpusRevision = revision
             resultToken = UUID()
@@ -48,6 +54,8 @@ import Combine
         } catch {
             guard request == token, !Task.isCancelled else { return }
             matchedIDs = []
+            hits = [:]
+            issues = []
             completedQuery = query
             completedCorpusRevision = revision
             self.error = "搜索未完成：\(error.localizedDescription)"

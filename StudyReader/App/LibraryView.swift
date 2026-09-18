@@ -11,7 +11,11 @@ struct LibraryView: View {
     @State private var selectedID: UUID?
     @State private var selectionRequest = UUID()
     @State private var search = ""
+    @State private var searchRetry = 0
+    @State private var showSearchIssues = false
     @State private var showImporter = false
+    @State private var showPackageExport = false
+    @State private var preparedPackage: PreparedLibraryPackage?
     @State private var importFolder = false
     @State private var importTargetID: UUID?
     @State private var showNewFolder = false
@@ -37,8 +41,8 @@ struct LibraryView: View {
         default: return library.folder(matching: filter)?.name ?? "资料"
         }
     }
-    private struct SearchRequest: Equatable { var query: String; var revision: Int }
-    private var searchRequest: SearchRequest { SearchRequest(query: search, revision: library.contentRevision) }
+    private struct SearchRequest: Equatable { var query: String; var revision: Int; var retry: Int }
+    private var searchRequest: SearchRequest { SearchRequest(query: search, revision: library.contentRevision, retry: searchRetry) }
     private var searchPending: Bool { !search.isEmpty && (searchModel.isSearching || !searchModel.isCurrent(query: search, revision: library.contentRevision)) }
     private var visibleDocuments: [LibraryDocument] {
         guard !searchPending else { return [] }
@@ -69,6 +73,8 @@ struct LibraryView: View {
         .task(id: searchRequest) {
             await searchModel.search(query: search, documents: library.documents, revision: library.contentRevision, using: library.searchEngine)
         }
+        .onChange(of: searchRequest) { _, _ in reader.clearSearch() }
+        .sheet(isPresented: $showSearchIssues) { searchIssuesView }
         .fileImporter(isPresented: $showImporter,
                       allowedContentTypes: importFolder ? [.folder] : [UTType(filenameExtension: "md") ?? .plainText, UTType(filenameExtension: "markdown") ?? .plainText, .plainText],
                       allowsMultipleSelection: !importFolder) { result in
@@ -79,6 +85,12 @@ struct LibraryView: View {
             case .failure(let error): library.errorMessage = error.localizedDescription
             }
         }
+        .fileExporter(isPresented: $showPackageExport, document: preparedPackage.map { LibraryExportDocument(package: $0) },
+                      contentType: .folder, defaultFilename: preparedPackage?.name ?? "资料包") { result in
+            if case .failure(let error) = result { library.errorMessage = error.localizedDescription }
+            preparedPackage = nil
+        }
+        .onChange(of: showPackageExport) { _, shown in if !shown { preparedPackage = nil } }
         .sheet(isPresented: $showNewFolder) { newFolderSheet }
         .sheet(isPresented: $showSyncSettings) { SyncSettingsView() }
         .sheet(item: $documentToRename) { document in RenameDocumentSheet(document: document) }
@@ -105,8 +117,8 @@ struct LibraryView: View {
             Button("知道了") { library.errorMessage = nil }
         } message: { Text(library.errorMessage ?? "") }
         .safeAreaInset(edge: .bottom) {
-            if library.isImporting || library.isDeleting {
-                HStack { ProgressView().controlSize(.small); Text(library.isDeleting ? "正在删除资料…" : "正在导入资料…") }.font(.callout).padding(10).frame(maxWidth: .infinity).background(.bar)
+            if library.isImporting || library.isDeleting || library.isExporting {
+                HStack { ProgressView().controlSize(.small); Text(library.isDeleting ? "正在删除资料…" : library.isExporting ? "正在准备资料包…" : "正在导入资料…") }.font(.callout).padding(10).frame(maxWidth: .infinity).background(.bar)
             } else if let notice = library.notice {
                 HStack { Text(notice); Spacer(); Button("关闭", systemImage: "xmark") { library.notice = nil }.labelStyle(.iconOnly) }
                     .font(.callout).padding(10).background(.bar)
@@ -197,6 +209,7 @@ struct LibraryView: View {
                     let renameItem = LibraryMenuItem("重命名…", enabled: library.canOrganize) { folderToRename = folder }
                     renameItem.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: "重命名资料夹")
                     menu.addItem(renameItem)
+                    menu.addItem(LibraryMenuItem("导出资料夹及附件…", enabled: library.canOrganize) { exportFolder(folder) })
                     menu.addItem(.separator())
                     menu.addItem(LibraryMenuItem("上移", enabled: library.canOrganize && library.collections.first?.id != folder.id) { shiftFolder(folder.id, down: false) })
                     menu.addItem(LibraryMenuItem("下移", enabled: library.canOrganize && library.collections.last?.id != folder.id) { shiftFolder(folder.id, down: true) })
@@ -251,6 +264,8 @@ struct LibraryView: View {
         .contextMenu {
             Button("重命名…", systemImage: "pencil") { folderToRename = folder }
                 .disabled(!library.canOrganize)
+            Button("导出资料夹及附件…", systemImage: "square.and.arrow.up") { exportFolder(folder) }
+                .disabled(!library.canOrganize)
             Divider()
             Button("上移", systemImage: "arrow.up") { shiftFolder(folder.id, down: false) }
                 .disabled(!library.canOrganize || library.collections.first?.id == folder.id)
@@ -279,6 +294,14 @@ struct LibraryView: View {
             }
         }
         .toolbar { ToolbarItem { importMenu } }
+        .safeAreaInset(edge: .top) {
+            if !search.isEmpty, !searchPending, !searchModel.issues.isEmpty {
+                Button { showSearchIssues = true } label: {
+                    Label("\(searchModel.issues.count) 篇正文未能搜索 · 查看", systemImage: "exclamationmark.triangle")
+                        .font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+                }.buttonStyle(.plain).padding(12).background(.bar)
+            }
+        }
         #if os(macOS)
         .safeAreaInset(edge: .bottom) {
             Text(filter == "recent" ? "按阅读时间排列 · 拖到资料夹可移动" : "上下拖动排序 · 拖到左侧资料夹可移动")
@@ -292,7 +315,8 @@ struct LibraryView: View {
         MacLibraryList(rows: visibleDocuments.map {
             .init(id: $0.id.uuidString, title: $0.title, documentID: $0.id,
                   isFavorite: library.isFavorite($0.id), progress: library.position(for: $0.id)?.progress ?? 0)
-        }, selection: Binding(get: { selectedID?.uuidString }, set: { selectDocument($0.flatMap(UUID.init(uuidString:))) }),
+                  .withSearchHit(search.isEmpty ? nil : searchModel.hits[$0.id])
+        }, selection: Binding(get: { selectedID?.uuidString }, set: { selectDocument($0.flatMap(UUID.init(uuidString:)), fromSearchResult: true) }),
             contextID: filter ?? "all", canDrag: library.canOrganize && !searchPending,
             dropMode: library.canOrganize && !searchPending && filter != "recent" ? .reorder : .none,
             acceptsDrop: { ids, target in
@@ -305,16 +329,20 @@ struct LibraryView: View {
                     try library.reorderDocuments(ids, visibleIDs: visibleIDs, at: index, folderID: selectedFolderID)
                     return true
                 } catch { library.errorMessage = error.localizedDescription; return false }
-            }, menu: documentMenu)
+            }, menu: documentMenu, activate: { selectDocument(UUID(uuidString: $0), fromSearchResult: true) })
         #else
-        List(selection: Binding(get: { selectedID }, set: selectDocument)) {
+        List(selection: Binding(get: { selectedID }, set: { selectDocument($0, fromSearchResult: true) })) {
             ForEach(visibleDocuments) { document in
                 NavigationLink(value: document.id) {
                     DocumentRow(title: document.title,
                                 isFavorite: library.isFavorite(document.id),
-                                progress: library.position(for: document.id)?.progress ?? 0)
+                                progress: library.position(for: document.id)?.progress ?? 0,
+                                searchHit: search.isEmpty ? nil : searchModel.hits[document.id])
                         .onDrag { DocumentDrag.provider(for: document.id, title: document.title) }
                 }
+                .simultaneousGesture(TapGesture().onEnded {
+                    if selectedID == document.id { selectDocument(document.id, fromSearchResult: true) }
+                })
                 .contextMenu { documentActions(document) }
             }
             .onInsert(of: filter == "recent" || !library.canOrganize || searchPending ? [] : [DocumentDrag.typeIdentifier]) { index, providers in
@@ -322,6 +350,29 @@ struct LibraryView: View {
             }
         }
         #endif
+    }
+
+    private var searchIssuesView: some View {
+        NavigationStack {
+            List {
+                Text("以下文件的正文暂时无法读取，其余文章的搜索结果仍可使用。恢复文件后可重新搜索。")
+                    .font(.callout).foregroundStyle(.secondary)
+                ForEach(searchModel.issues) { issue in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(issue.title).font(.headline)
+                        Text(issue.path).font(.caption).foregroundStyle(.secondary)
+                        Text(issue.message).font(.callout).textSelection(.enabled)
+                    }.padding(.vertical, 4)
+                }
+            }
+            .navigationTitle("无法搜索的文件")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("关闭") { showSearchIssues = false } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("重新搜索") { showSearchIssues = false; searchRetry &+= 1 }
+                }
+            }
+        }.frame(minWidth: 320, idealWidth: 480, minHeight: 300, idealHeight: 420)
     }
 
     #if os(macOS)
@@ -332,6 +383,7 @@ struct LibraryView: View {
         let renameItem = LibraryMenuItem("重命名…", enabled: library.canOrganize) { documentToRename = document }
         renameItem.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: "重命名")
         menu.addItem(renameItem)
+        menu.addItem(LibraryMenuItem("导出文章及附件…", enabled: library.canOrganize) { exportDocuments([id], name: document.title) })
         menu.addItem(LibraryMenuItem(library.isFavorite(id) ? "取消收藏" : "收藏") { library.toggleFavorite(id) })
         let moveMenu = NSMenu()
         moveMenu.autoenablesItems = false
@@ -357,6 +409,8 @@ struct LibraryView: View {
 
     @ViewBuilder private func documentActions(_ document: LibraryDocument) -> some View {
         Button("重命名…", systemImage: "pencil") { documentToRename = document }
+            .disabled(!library.canOrganize)
+        Button("导出文章及附件…", systemImage: "square.and.arrow.up") { exportDocuments([document.id], name: document.title) }
             .disabled(!library.canOrganize)
         Button(library.isFavorite(document.id) ? "取消收藏" : "收藏") { library.toggleFavorite(document.id) }
         Menu("移到资料夹") {
@@ -386,7 +440,7 @@ struct LibraryView: View {
                 importTargetID = selectedFolderID
                 showImporter = true
             }
-            Button("导入资料文件夹", systemImage: "folder.badge.plus") {
+            Button("导入资料文件夹／资料包", systemImage: "folder.badge.plus") {
                 importFolder = true
                 importTargetID = nil
                 showImporter = true
@@ -396,6 +450,18 @@ struct LibraryView: View {
         } label: { Label("添加资料", systemImage: "plus") }
         .disabled(!library.canOrganize)
         .help("新建资料夹或导入资料")
+    }
+
+    private func exportFolder(_ folder: LibraryFolder) {
+        exportDocuments(folder.documentIDs, name: folder.name)
+    }
+    private func exportDocuments(_ ids: [UUID], name: String) {
+        Task {
+            do {
+                preparedPackage = try await library.exportPackage(documentIDs: ids, name: name)
+                showPackageExport = true
+            } catch { library.errorMessage = error.localizedDescription }
+        }
     }
 
     private var newFolderSheet: some View {
@@ -441,11 +507,18 @@ struct LibraryView: View {
         selectDocument(nil)
         #endif
     }
-    private func selectDocument(_ id: UUID?) {
+    private func selectDocument(_ id: UUID?, fromSearchResult: Bool = false) {
         let request = UUID()
         selectionRequest = request
+        let target = fromSearchResult && !search.isEmpty && !searchPending
+            ? id.flatMap { searchModel.hits[$0]?.target } : nil
+        let selectedSearchRequest = searchRequest
         guard id != selectedID else {
             if id != nil { reader.resumeReading() }
+            if fromSearchResult {
+                if let target, let id { reader.revealSearch(target, in: id) }
+                else { reader.clearSearch() }
+            }
             return
         }
         Task {
@@ -453,7 +526,12 @@ struct LibraryView: View {
             // click wins if another column/article was selected during this round trip.
             await reader.prepareToLeave()
             guard request == selectionRequest else { return }
-            library.flush()
+            await library.flush()
+            guard request == selectionRequest else { return }
+            reader.clearSearch()
+            // A query can change while the outgoing article is being saved. Finish the user's
+            // article selection, but never apply a location from the obsolete query.
+            if selectedSearchRequest == searchRequest, let target, let id { reader.revealSearch(target, in: id) }
             selectedID = id
         }
     }
@@ -525,19 +603,42 @@ private struct DocumentRow: View {
     let title: String
     let isFavorite: Bool
     let progress: Double
+    var searchHit: LibrarySearchHit? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top) {
-                Text(title).font(.headline).lineLimit(2)
+                SearchHighlightedText(value: searchHit?.title ?? LibrarySearchText(title, query: ""))
+                    .font(.headline).lineLimit(2)
                 Spacer(minLength: 4)
                 if isFavorite {
                     Image(systemName: "star.fill").foregroundStyle(.orange).font(.caption)
                 }
+            }
+            if let hit = searchHit {
+                if let snippet = hit.snippet {
+                    SearchHighlightedText(value: snippet).font(.callout).foregroundStyle(.secondary).lineLimit(3)
+                } else { Text("标题匹配").font(.caption).foregroundStyle(.secondary) }
             }
             if progress > 0.02 {
                 ProgressView(value: progress).tint(.secondary).frame(maxWidth: 120)
             }
         }.padding(.vertical, 7).contentShape(Rectangle())
     }
+}
+
+private struct SearchHighlightedText: View {
+    let value: LibrarySearchText
+    private var attributed: AttributedString {
+        var text = AttributedString(value.text)
+        for range in value.highlights {
+            guard let sourceRange = Range(range, in: value.text),
+                  let lower = AttributedString.Index(sourceRange.lowerBound, within: text),
+                  let upper = AttributedString.Index(sourceRange.upperBound, within: text) else { continue }
+            text[lower..<upper].backgroundColor = .yellow.opacity(0.35)
+            text[lower..<upper].foregroundColor = .primary
+        }
+        return text
+    }
+    var body: some View { Text(attributed) }
 }

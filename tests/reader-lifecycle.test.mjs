@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import {parseHTML} from 'linkedom';
 import {renderMarkdown,foldAnswers} from '../WebReader/markdown.mjs';
 import {TypesetCache} from '../WebReader/typeset-cache.mjs';
+import {highlightSearch,clearSearch} from '../WebReader/search.mjs';
 
 const source=(await readFile(new URL('../WebReader/reader.mjs',import.meta.url),'utf8'))
   .replace(/^import[^\n]*\n/gm,'').replace(/^export /gm,'');
@@ -14,7 +15,7 @@ function fixture() {
   const messages=[];
   const listeners=new Map();
   const context=vm.createContext({document,window:{webkit:{messageHandlers:{reader:{postMessage:message=>messages.push(message)}}}},
-    renderMarkdown,foldAnswers,TypesetCache,addEventListener:(name,fn)=>listeners.set(name,fn),clearTimeout,
+    renderMarkdown,foldAnswers,TypesetCache,highlightSearch,clearSearch,addEventListener:(name,fn)=>listeners.set(name,fn),clearTimeout,
     setTimeout:(fn,delay)=>{const timer=setTimeout(fn,delay);timer.unref();return timer;},
     requestAnimationFrame:fn=>queueMicrotask(fn),NodeFilter:{SHOW_TEXT:4},innerHeight:800,scrollY:0});
   context.scrollTo=(_x,y)=>{context.scrollY=y;};
@@ -23,6 +24,11 @@ function fixture() {
   window.HTMLElement.prototype.getBoundingClientRect=function(){
     const index=[...document.querySelectorAll('.reading-block')].indexOf(this);
     return {top:Math.max(0,index)*200-context.scrollY,width:600,height:180};
+  };
+  window.HTMLElement.prototype.scrollIntoView=function(){
+    const element=this.closest('[data-source-start]');
+    const index=[...document.querySelectorAll('.reading-block')].indexOf(element);
+    context.scrollY=Math.max(0,index)*200;
   };
   vm.runInContext(source,context);
   const payload=id=>({id,content:'# '+id+'\n\n'+Array.from({length:20},(_v,i)=>`${id} paragraph ${i}`).join('\n\n'),baseURL:`reader://library/${id}/a.md`,preferences});
@@ -43,6 +49,45 @@ test('a pending preference restore cannot move the next article',async()=>{
   f.reader.save();
   assert.equal(f.messages.at(-1).documentID,'B');
   assert.equal(f.messages.at(-1).payload.progress,0);
+});
+
+test('a search jump waits for layout, records deliberate navigation and rejects stale sessions',async()=>{
+  const f=fixture();
+  await f.reader.render({...f.payload('A'),session:'A-1'});
+  assert.equal(f.reader.save().activity,null);
+  assert.equal(await f.reader.revealSearch({query:'paragraph 10',matchedText:'paragraph 10',sourceLine:22},'A-old'),false);
+  assert.equal(f.context.scrollY,0);
+  assert.equal(await f.reader.revealSearch({query:'paragraph 10',matchedText:'paragraph 10',sourceLine:22},'A-1'),true);
+  assert.equal(f.context.scrollY,2200);
+  assert.ok(f.reader.save().activity.position.progress>0.5);
+  const release=f.gate();
+  const pending=f.reader.revealSearch({query:'paragraph 5',sourceLine:12},'A-1');
+  const next=f.reader.render({...f.payload('B'),session:'B-1'});
+  release();
+  await Promise.all([pending,next]);
+  assert.equal(f.context.scrollY,0);
+  assert.equal(f.document.querySelector('.search-target'),null);
+  assert.equal(f.reader.save().activity,null);
+});
+
+test('clearing or leaving during a pending search does not move or overwrite the checkpoint',async()=>{
+  const f=fixture();
+  await f.reader.render({...f.payload('A'),session:'A-1'});
+  f.context.scrollY=600;
+  f.reader.save();
+  const release=f.gate();
+  const pending=f.reader.revealSearch({query:'paragraph 10',sourceLine:22},'A-1');
+  f.reader.clearSearch();
+  release();
+  assert.equal(await pending,false);
+  assert.equal(f.context.scrollY,600);
+  assert.equal(f.document.querySelector('mark'),null);
+  const releaseAgain=f.gate();
+  const leaving=f.reader.revealSearch({query:'paragraph 10',sourceLine:22},'A-1');
+  const saved=f.reader.save('A-1',true);
+  releaseAgain();
+  assert.equal(await leaving,false);
+  assert.deepEqual(f.reader.save('A-1',true,true).position,saved.position);
 });
 test('overlapping renders only announce the newest article as ready',async()=>{
   const f=fixture();

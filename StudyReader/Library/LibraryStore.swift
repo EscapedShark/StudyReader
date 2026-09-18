@@ -11,22 +11,35 @@ struct ReadingPosition: Codable, Equatable, Sendable {
     var progress: Double
 }
 
-struct LocalReadingState: Codable, Sendable {
+struct LocalReadingState: Codable, Equatable, Sendable {
+    var version = 2
     var favorites: Set<UUID> = []
     var positions: [String: ReadingPosition] = [:]
     var lastOpened: [String: Date] = [:]
     var readingDeviceID = UUID()
     var progressUpdates: [String: ReadingProgressUpdate] = [:]
+    var favoriteUpdates: [String: FavoriteUpdate] = [:]
 
-    init(favorites: Set<UUID> = []) { self.favorites = favorites }
-    private enum CodingKeys: String, CodingKey { case favorites, positions, lastOpened, readingDeviceID, progressUpdates }
+    init(favorites: Set<UUID> = []) {
+        self.favorites = favorites
+        favoriteUpdates = Dictionary(uniqueKeysWithValues: favorites.map {
+            ($0.uuidString, FavoriteUpdate(device: readingDeviceID, updatedAt: .distantPast, isFavorite: true))
+        })
+    }
+    private enum CodingKeys: String, CodingKey { case version, favorites, positions, lastOpened, readingDeviceID, progressUpdates, favoriteUpdates }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decodeIfPresent(Int.self, forKey: .version) ?? 0
         favorites = try values.decodeIfPresent(Set<UUID>.self, forKey: .favorites) ?? []
         positions = try values.decodeIfPresent([String: ReadingPosition].self, forKey: .positions) ?? [:]
         lastOpened = try values.decodeIfPresent([String: Date].self, forKey: .lastOpened) ?? [:]
         readingDeviceID = try values.decodeIfPresent(UUID.self, forKey: .readingDeviceID) ?? UUID()
         progressUpdates = try values.decodeIfPresent([String: ReadingProgressUpdate].self, forKey: .progressUpdates) ?? [:]
+        favoriteUpdates = try values.decodeIfPresent([String: FavoriteUpdate].self, forKey: .favoriteUpdates) ?? [:]
+        // Legacy favorites have no action time. They must never override a newer removal.
+        for id in favorites where favoriteUpdates[id.uuidString] == nil {
+            favoriteUpdates[id.uuidString] = FavoriteUpdate(device: readingDeviceID, updatedAt: .distantPast, isFavorite: true)
+        }
         // Existing local positions keep their historical time; connecting is not new reading.
         for (key, position) in positions where progressUpdates[key] == nil {
             progressUpdates[key] = ReadingProgressUpdate(device: readingDeviceID, updatedAt: lastOpened[key] ?? .distantPast, position: position)
@@ -42,6 +55,7 @@ struct LocalReadingState: Codable, Sendable {
     /// them change nothing the shelf draws. Notifications are sent explicitly instead.
     private(set) var state = LocalReadingState()
     @Published var isImporting = false
+    @Published private(set) var isExporting = false
     @Published private(set) var isDeleting = false
     @Published private(set) var isUpdating = false
     @Published var errorMessage: String?
@@ -84,8 +98,17 @@ struct LocalReadingState: Codable, Sendable {
         var documents: [LibraryDocument]
         var organization: LibraryOrganization
         var state: LocalReadingState
+        var needsStateSave: Bool
     }
-    private let saveQueue = DispatchQueue(label: "com.personal.studyreader.reading-state", qos: .utility)
+    private let stateWriter: ReadingStateWriter
+    private var stateRevision: UInt64 = 0
+    private var savedStateRevision: UInt64 = 0
+    private var pendingWrite: (revision: UInt64, task: Task<Bool, Never>)?
+    #if os(iOS)
+    private var lifecycleSave: Task<Void, Never>?
+    private var lifecycleSaveID: UUID?
+    private var lifecycleActivity: UIBackgroundTaskIdentifier = .invalid
+    #endif
 
     // Derived views of the library. Rebuilt only when documents or folders change, because the
     // shelf reads them on every render pass and the reader publishes while scrolling.
@@ -99,9 +122,10 @@ struct LocalReadingState: Codable, Sendable {
     private struct VisibleKey: Equatable { var revision: Int; var filter: String?; var searchToken: UUID? }
     private var visibleCache: (key: VisibleKey, value: [LibraryDocument])?
 
-    init(rootURL: URL? = nil, seedSamples: Bool = true, automaticSync: Bool = true) {
+    init(rootURL: URL? = nil, seedSamples: Bool = true, automaticSync: Bool = true, stateWriter: ReadingStateWriter = ReadingStateWriter()) {
         let root = rootURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("StudyReader", isDirectory: true)
         self.rootURL = root
+        self.stateWriter = stateWriter
         self.seedSamples = seedSamples
         self.automaticSync = automaticSync
         libraryURL = root.appendingPathComponent("Collections", isDirectory: true)
@@ -125,6 +149,9 @@ struct LocalReadingState: Codable, Sendable {
                 var documents = try LibraryDisk.loadMetadata(from: libraryURL)
                 var state = FileManager.default.fileExists(atPath: stateURL.path)
                     ? try JSONDecoder().decode(LocalReadingState.self, from: Data(contentsOf: stateURL)) : LocalReadingState()
+                let storedState = state
+                let needsMigration = state.version < 2
+                state.version = 2
                 if let examples, !FileManager.default.fileExists(atPath: seeded.path) {
                     if case .imported(let added) = try LibraryDisk.importItem(at: examples, into: libraryURL, name: "开始阅读",
                         knownFingerprints: Set(documents.map { $0.collection.fingerprint })) {
@@ -139,7 +166,8 @@ struct LocalReadingState: Codable, Sendable {
                 let validKeys = Set(validIDs.map(\.uuidString))
                 state.positions = state.positions.filter { validKeys.contains($0.key) }
                 state.lastOpened = state.lastOpened.filter { validKeys.contains($0.key) }
-                return Snapshot(documents: documents, organization: organization, state: state)
+                return Snapshot(documents: documents, organization: organization, state: state,
+                    needsStateSave: needsMigration || !FileManager.default.fileExists(atPath: stateURL.path) || state != storedState)
             }
             loadTask = task
         }
@@ -147,6 +175,7 @@ struct LocalReadingState: Codable, Sendable {
             let snapshot = try await task.value
             guard !hasLoaded else { return }
             state = snapshot.state
+            stateRevision = snapshot.needsStateSave ? 1 : 0
             let observedAt = Date()
             progressObservedAt = state.progressUpdates.mapValues { _ in observedAt }
             documents = snapshot.documents
@@ -161,7 +190,10 @@ struct LocalReadingState: Codable, Sendable {
         hasLoaded = true
         isLoading = false
         loadTask = nil
-        if !isReadOnly { await restoreSyncConnection() }
+        if !isReadOnly {
+            if stateRevision != savedStateRevision { scheduleSave() }
+            await restoreSyncConnection()
+        }
     }
 
     private func rebuildIndexes() {
@@ -181,7 +213,7 @@ struct LocalReadingState: Codable, Sendable {
     }
 
     var collections: [LibraryFolder] { organization.folders }
-    var canOrganize: Bool { hasLoaded && !isReadOnly && !isImporting && !isDeleting && !isUpdating && !isSyncInstalling && !isConnecting }
+    var canOrganize: Bool { hasLoaded && !isReadOnly && !isImporting && !isExporting && !isDeleting && !isUpdating && !isSyncInstalling && !isConnecting }
     var roots: [String: URL] { cachedRoots }
     func document(id: UUID?) -> LibraryDocument? { id.flatMap { documentIndex[$0] } }
     func folder(matching filter: String?) -> LibraryFolder? { filter.flatMap { folderByFilter[$0] } }
@@ -274,7 +306,8 @@ struct LocalReadingState: Codable, Sendable {
         organization = updated
         contentRevision &+= 1
         rebuildIndexes()
-        flush()
+        markStateChanged()
+        await flush()
         await content.remove(id)
         notice = "已删除「\(document.title)」"
         if let cleanupError = result.cleanupError { errorMessage = cleanupError }
@@ -327,7 +360,8 @@ struct LocalReadingState: Codable, Sendable {
         if !ids.isEmpty { contentRevision &+= 1 }
         rebuildIndexes()
         for documentID in ids { await content.remove(documentID) }
-        flush()
+        if !ids.isEmpty { markStateChanged() }
+        await flush()
         notice = "已删除资料夹「\(folder.name)」" + (ids.isEmpty ? "" : "及其中 \(ids.count) 篇文章")
         if let cleanupError = result.cleanupError { errorMessage = cleanupError }
         scheduleSync()
@@ -386,15 +420,21 @@ struct LocalReadingState: Codable, Sendable {
         guard hasLoaded, !isReadOnly, documentIndex[id] != nil else { return }
         objectWillChange.send()
         state.lastOpened[id.uuidString] = Date()
+        markStateChanged()
         invalidateDerivedState()
         scheduleSave()
     }
     func toggleFavorite(_ id: UUID) {
         guard hasLoaded, !isReadOnly, documentIndex[id] != nil else { return }
         objectWillChange.send()
-        if state.favorites.contains(id) { state.favorites.remove(id) } else { state.favorites.insert(id) }
+        let key = id.uuidString, favorite = !state.favorites.contains(id)
+        let timestamp = max(Date(), (state.favoriteUpdates[key]?.updatedAt ?? .distantPast).addingTimeInterval(0.000001))
+        state.favoriteUpdates[key] = FavoriteUpdate(device: state.readingDeviceID, updatedAt: timestamp, isFavorite: favorite)
+        if favorite { state.favorites.insert(id) } else { state.favorites.remove(id) }
+        markStateChanged()
         invalidateDerivedState()
-        flush()
+        enqueueStateSave()
+        scheduleSync()
     }
     func updatePosition(_ position: ReadingPosition, id: UUID, readAt: Date = Date()) {
         guard hasLoaded, !isReadOnly, documentIndex[id] != nil, position.offset.isFinite, position.progress.isFinite else { return }
@@ -412,8 +452,27 @@ struct LocalReadingState: Codable, Sendable {
         if drawnProgress(state.positions[key]?.progress) != drawnProgress(position.progress) { noteProgressRedraw() }
         state.positions[key] = position
         state.progressUpdates[key] = update
+        markStateChanged()
         scheduleSave()
         scheduleSync(after: 3)
+    }
+
+    private func applyFavorites(_ updates: [String: FavoriteUpdate]) {
+        var merged = state.favoriteUpdates
+        FavoriteSnapshot.merge(updates, into: &merged)
+        var favorites = state.favorites
+        for document in documents {
+            guard let update = merged[document.id.uuidString] else { continue }
+            if update.isFavorite { favorites.insert(document.id) }
+            else { favorites.remove(document.id) }
+        }
+        guard merged != state.favoriteUpdates || favorites != state.favorites else { return }
+        objectWillChange.send()
+        if favorites != state.favorites { invalidateDerivedState() }
+        state.favoriteUpdates = merged
+        state.favorites = favorites
+        markStateChanged()
+        enqueueStateSave()
     }
 
     private func applyProgress(_ updates: [String: ReadingProgressUpdate]) {
@@ -428,7 +487,8 @@ struct LocalReadingState: Codable, Sendable {
         if positions != state.positions || previous != state.progressUpdates {
             objectWillChange.send()
             state.positions = positions
-            flush()
+            markStateChanged()
+            enqueueStateSave()
         }
     }
     private func drawnProgress(_ value: Double?) -> Int { Int((min(1, max(0, value ?? 0)) * 200).rounded()) }
@@ -455,34 +515,93 @@ struct LocalReadingState: Codable, Sendable {
         visibleCache = nil
     }
 
+    private func markStateChanged() { stateRevision &+= 1 }
+
     private func scheduleSave() {
         pendingSave?.cancel()
-        let save = DispatchWorkItem { [weak self] in self?.writeState(waiting: false) }
+        let save = DispatchWorkItem { [weak self] in self?.enqueueStateSave() }
         pendingSave = save
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: save)
     }
-    func flush() {
+
+    /// Await durability without occupying the main thread. Concurrent callers share a write;
+    /// mutations arriving during that write are saved in order before the flush completes.
+    @discardableResult func flush() async -> Bool {
         if progressRedraw != nil { sendProgressRedraw() }
-        writeState(waiting: true)
+        while let write = enqueueStateSave() {
+            guard await write.value else { return false }
+        }
+        return true
     }
-    /// Debounced saves hand both the encoding and the file write to a serial queue, so a library
-    /// with thousands of reading positions never encodes JSON on the main thread while scrolling.
-    /// The queue keeps the snapshots in order; `flush` still returns only once its bytes are out.
-    private func writeState(waiting: Bool) {
+
+    @discardableResult private func enqueueStateSave() -> Task<Bool, Never>? {
         pendingSave?.cancel()
         pendingSave = nil
-        guard hasLoaded, !isReadOnly else { return }
-        let url = stateURL
-        // A value copy: the queue encodes exactly this checkpoint even if reading continues.
-        let snapshot = state
-        let write: @Sendable () -> Void = { [weak self] in
-            do { try JSONEncoder().encode(snapshot).write(to: url, options: .atomic) }
-            catch {
-                let message = "阅读状态未能保存：\(error.localizedDescription)"
-                Task { @MainActor in self?.errorMessage = message }
+        guard hasLoaded, !isReadOnly else { return nil }
+        if let pendingWrite, pendingWrite.revision == stateRevision { return pendingWrite.task }
+        guard stateRevision != savedStateRevision else { return pendingWrite?.task }
+        let snapshot = state, revision = stateRevision, previous = pendingWrite?.task
+        let writer = stateWriter, url = stateURL
+        let task = Task { @MainActor [weak self] in
+            if let previous { _ = await previous.value }
+            let succeeded: Bool
+            do {
+                try await writer.write(snapshot, to: url)
+                self?.savedStateRevision = revision
+                succeeded = true
+            } catch {
+                self?.errorMessage = "阅读状态未能保存：\(error.localizedDescription)"
+                succeeded = false
             }
+            if self?.pendingWrite?.revision == revision { self?.pendingWrite = nil }
+            return succeeded
         }
-        if waiting { saveQueue.sync(execute: write) } else { saveQueue.async(execute: write) }
+        pendingWrite = (revision, task)
+        return task
+    }
+
+    /// iOS may suspend even a local-only library. Start the background assertion synchronously,
+    /// before yielding to the writer; the reader's final checkpoint can join the same flush.
+    func saveForLifecycle() {
+        enqueueStateSave()
+        #if os(iOS)
+        guard lifecycleSave == nil else { return }
+        let id = UUID()
+        lifecycleSaveID = id
+        lifecycleActivity = UIApplication.shared.beginBackgroundTask(withName: "保存本机阅读状态") { [weak self] in
+            Task { @MainActor in self?.endLifecycleSave(id) }
+        }
+        lifecycleSave = Task { [self] in
+            await flush()
+            endLifecycleSave(id)
+        }
+        #else
+        Task { await flush() }
+        #endif
+    }
+    #if os(iOS)
+    private func endLifecycleSave(_ id: UUID) {
+        guard lifecycleSaveID == id else { return }
+        if lifecycleActivity != .invalid {
+            UIApplication.shared.endBackgroundTask(lifecycleActivity)
+            lifecycleActivity = .invalid
+        }
+        lifecycleSave = nil
+        lifecycleSaveID = nil
+    }
+    #endif
+
+    func exportPackage(documentIDs: [UUID], name: String) async throws -> PreparedLibraryPackage {
+        guard canOrganize else { throw ReaderFailure(message: "资料库正在处理其他操作，请稍后重试。") }
+        let selected = documentIDs.compactMap { documentIndex[$0] }
+        guard selected.count == documentIDs.count, Set(documentIDs).count == documentIDs.count else {
+            throw ReaderFailure(message: "资料已发生变化，请重新选择后导出。")
+        }
+        isExporting = true
+        defer { isExporting = false }
+        return try await Task.detached(priority: .userInitiated) {
+            try LibraryPackage.prepare(documents: selected, name: name)
+        }.value
     }
 
     func importItems(_ urls: [URL], intoFolderID: UUID? = nil) async {
@@ -493,6 +612,7 @@ struct LocalReadingState: Codable, Sendable {
         let destination = libraryURL
         var added: [LibraryDocument] = []
         var duplicate = 0
+        var emptyFolders: [String] = []
         var fingerprints = Set(documents.map { $0.collection.fingerprint })
         var failures: [String] = []
         for source in urls {
@@ -506,14 +626,23 @@ struct LocalReadingState: Codable, Sendable {
                     added.append(contentsOf: incoming)
                     fingerprints.formUnion(incoming.map { $0.collection.fingerprint })
                 case .duplicate: duplicate += 1
+                case .emptyFolder(let name): emptyFolders.append(name)
                 }
             } catch { failures.append("\(source.lastPathComponent)：\(error.localizedDescription)") }
         }
         do {
-            if !added.isEmpty {
+            if !added.isEmpty || !emptyFolders.isEmpty {
                 let loaded = documents + added
                 var updated = organization
                 updated.reconcile(with: loaded, newDocumentsFolderID: intoFolderID)
+                for name in emptyFolders {
+                    var candidate = name, number = 2
+                    while updated.folders.contains(where: { $0.name.localizedCaseInsensitiveCompare(candidate) == .orderedSame }) {
+                        candidate = String(name.prefix(90)) + " (\(number))"
+                        number += 1
+                    }
+                    _ = try updated.createFolder(named: candidate)
+                }
                 let organizationToSave = updated, url = organizationURL
                 try await Task.detached { try organizationToSave.save(to: url) }.value
                 documents = loaded
@@ -528,7 +657,7 @@ struct LocalReadingState: Codable, Sendable {
             isReadOnly = true
             failures.append("资料文件已保留，但整理记录未能保存，已暂停写入。重新打开 App 后会重新读取资料库。\n\(error.localizedDescription)")
         }
-        notice = "已导入 \(added.count) 篇" + (duplicate > 0 ? "，跳过 \(duplicate) 份重复资料" : "")
+        notice = "已导入 \(added.count) 篇" + (emptyFolders.isEmpty ? "" : "，\(emptyFolders.count) 个空资料夹") + (duplicate > 0 ? "，跳过 \(duplicate) 份重复资料" : "")
         if !failures.isEmpty { errorMessage = failures.joined(separator: "\n") }
         scheduleSync()
     }
@@ -573,7 +702,7 @@ struct LocalReadingState: Codable, Sendable {
         isConnecting = true
         syncIssue = nil
         syncStatus = "正在连接资料库…"
-        flush()
+        await flush()
         let root = rootURL
         let access = makeSyncAccess(url)
         do {
@@ -713,9 +842,9 @@ struct LocalReadingState: Codable, Sendable {
             if await engine.needsBootstrap() { _ = try await engine.exchange(with: access.url) }
             guard canOrganize else { syncRequested = true; return }
             isSyncInstalling = true
-            flush()
+            await flush()
             try await engine.prepare(documents: documents, organization: organization)
-            let capturedRevision = revision
+            var capturedRevision = revision
             isSyncInstalling = false
             var progressExchange: ReadingProgressExchange?
             var progressError: String?
@@ -724,16 +853,27 @@ struct LocalReadingState: Codable, Sendable {
                     documentIDs: Set(documents.map(\.id)), folder: access.url)
                 if let progressExchange { applyProgress(progressExchange.updates) }
             } catch { progressError = error.localizedDescription }
+            var favoriteExchange: FavoriteExchange?
+            do {
+                favoriteExchange = try await engine.exchangeFavorites(state.favoriteUpdates, device: state.readingDeviceID,
+                    documentIDs: Set(documents.map(\.id)), folder: access.url)
+                let unchanged = revision == capturedRevision
+                if let favoriteExchange { applyFavorites(favoriteExchange.updates) }
+                if unchanged { capturedRevision = revision }
+            } catch {
+                progressError = [progressError, "收藏同步：\(error.localizedDescription)"].compactMap { $0 }.joined(separator: "\n")
+            }
             let exchange = try await engine.exchange(with: access.url)
             guard revision == capturedRevision, canOrganize else { syncRequested = true; return }
             isSyncInstalling = true
-            flush()
+            await flush()
             if let installed = try await engine.install(exchange.projection, documents: documents, organization: organization) {
                 let changed = installed.documents.filter { current in
                     documentIndex[current.id]?.record != current.record || documentIndex[current.id]?.rootURL != current.rootURL
                 }.map(\.id)
                 let removed = Set(documents.map(\.id)).subtracting(installed.documents.map(\.id))
                 for id in Set(changed).union(removed) { await content.remove(id) }
+                let previousState = state
                 SyncInstaller.remap(&state, aliases: installed.aliases)
                 documents = installed.documents
                 organization = installed.organization
@@ -743,19 +883,22 @@ struct LocalReadingState: Codable, Sendable {
                 state.lastOpened = state.lastOpened.filter { validKeys.contains($0.key) }
                 if !changed.isEmpty || !removed.isEmpty { contentRevision &+= 1 }
                 rebuildIndexes()
-                flush()
+                if state != previousState { markStateChanged() }
+                await flush()
             }
             // Reading metadata can arrive before its article. Keep it until the corresponding
             // content has downloaded, then make it available on the very first open.
             applyProgress([:])
+            applyFavorites([:])
+            await flush()
             lastSyncCheck = Date()
             if let progressError {
-                syncStatus = "资料已更新，进度待同步"
-                syncIssue = "本机阅读进度已保留，将在下次检查时重试。\n\(progressError)"
-            } else if progressExchange?.waitingForDownload == true {
-                syncStatus = "资料已更新，等待下载进度"
+                syncStatus = "资料已更新，收藏或进度待同步"
+                syncIssue = "本机收藏与阅读进度已保留，将在下次检查时重试。\n\(progressError)"
+            } else if progressExchange?.waitingForDownload == true || favoriteExchange?.waitingForDownload == true {
+                syncStatus = "资料已更新，等待下载收藏或进度"
             } else {
-                syncStatus = exchange.waitingForUpload || progressExchange?.waitingForUpload == true ? "等待 iCloud 上传" : "资料与阅读进度已更新"
+                syncStatus = exchange.waitingForUpload || progressExchange?.waitingForUpload == true || favoriteExchange?.waitingForUpload == true ? "等待 iCloud 上传" : "资料、收藏与阅读进度已更新"
             }
         } catch is SyncPending {
             syncStatus = "等待 iCloud 下载"

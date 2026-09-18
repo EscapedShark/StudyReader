@@ -108,6 +108,7 @@ enum SyncInstaller {
     }
 
     static func remap(_ state: inout LocalReadingState, aliases: [String: UUID]) {
+        state.favoriteUpdates = FavoriteSnapshot.remap(state.favoriteUpdates, aliases: aliases)
         state.progressUpdates = ReadingProgressSnapshot.remap(state.progressUpdates, aliases: aliases)
         for (key, target) in aliases {
             guard let source = UUID(uuidString: key), source != target else { continue }
@@ -118,6 +119,11 @@ enum SyncInstaller {
             if let opened = state.lastOpened.removeValue(forKey: key) {
                 state.lastOpened[target.uuidString] = max(opened, state.lastOpened[target.uuidString] ?? .distantPast)
             }
+        }
+        for (key, update) in state.favoriteUpdates {
+            guard let id = UUID(uuidString: key) else { continue }
+            if update.isFavorite { state.favorites.insert(id) }
+            else { state.favorites.remove(id) }
         }
     }
 }

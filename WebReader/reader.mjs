@@ -1,10 +1,12 @@
 import { renderMarkdown, foldAnswers } from './markdown.mjs';
 import { TypesetCache } from './typeset-cache.mjs';
+import { highlightSearch, clearSearch } from './search.mjs';
 
 const article = document.querySelector('article');
 let documentID = '', restoring = false, saveTimer, generation = 0;
 let preferencesGeneration = 0;
 let rendering = false;
+let searchGeneration = 0, searching = false;
 let suspended = true, session = '', lastPosition = null, lastCheckpoint = 0;
 let lastActivity = null, activitySequence = 0, intentUntil = 0, pendingUserScroll = false, userScrollAt = 0;
 let lastPosted = null, postedActivity = null;
@@ -181,6 +183,8 @@ window.Reader = {
     checkpoint();
     const saved = !payload.preferSavedPosition && payload.id === documentID && lastPosition ? lastPosition : payload.position;
     const run = ++generation;
+    ++searchGeneration;
+    searching = false;
     ++preferencesGeneration;
     rendering = true;
     restoring = true;
@@ -250,6 +254,7 @@ window.Reader = {
     }
   },
   async preferences(prefs) {
+    this.cancelSearchNavigation();
     const run = generation, preferenceRun = ++preferencesGeneration;
     // The active render owns restoration until its initial layout has settled.
     if (rendering) {
@@ -271,6 +276,7 @@ window.Reader = {
     restoring = false;
   },
   scrollToHeading(id) {
+    this.cancelSearchNavigation();
     const target = document.getElementById(id);
     if (target) {
       readingIntent();
@@ -280,6 +286,29 @@ window.Reader = {
     }
   },
   navigationFinished() { readingIntent(); checkpoint(); },
+  cancelSearchNavigation() {
+    ++searchGeneration;
+    if (searching && !rendering) restoring = false;
+    searching = false;
+  },
+  clearSearch() { this.cancelSearchNavigation(); clearSearch(article); },
+  async revealSearch(target, expectedSession) {
+    if (expectedSession !== session || rendering || suspended) return false;
+    checkpoint();
+    const run = generation, searchRun = ++searchGeneration;
+    ++preferencesGeneration; // a late preference restoration must not undo this explicit jump
+    clearIntent();
+    searching = restoring = true;
+    const element = highlightSearch(article, target);
+    await settled();
+    if (run !== generation || searchRun !== searchGeneration) return false;
+    searching = restoring = false;
+    if (!element || suspended) return false;
+    element.scrollIntoView({ behavior: 'auto', block: 'center' });
+    readingIntent();
+    checkpoint();
+    return true;
+  },
   save(expectedSession, suspend = false, cachedOnly = false) {
     return checkpoint(expectedSession, suspend, cachedOnly);
   },

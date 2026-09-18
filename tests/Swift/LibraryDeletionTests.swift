@@ -60,7 +60,7 @@ final class LibraryDeletionTests: XCTestCase {
         store.opened(a.id)
         store.toggleFavorite(a.id)
         store.updatePosition(position, id: a.id)
-        store.flush()
+        await store.flush()
         XCTAssertFalse(store.isFavorite(a.id))
         XCTAssertNil(store.position(for: a.id))
         XCTAssertNil(store.state.lastOpened[a.id.uuidString])

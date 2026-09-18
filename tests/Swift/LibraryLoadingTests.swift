@@ -56,7 +56,7 @@ final class LibraryLoadingTests: XCTestCase {
         XCTAssertTrue(store.isLoading)
         XCTAssertTrue(store.documents.isEmpty)
         XCTAssertFalse(store.canOrganize)
-        store.flush()
+        await store.flush()
         XCTAssertEqual(try Data(contentsOf: stateFile), saved)
         async let first: Void = store.loadIfNeeded()
         async let second: Void = store.loadIfNeeded()
@@ -117,7 +117,7 @@ final class LibraryLoadingTests: XCTestCase {
         XCTAssertEqual(store.contentRevision, contentRevision + 1)
         store.toggleFavorite(first.id)
         store.opened(first.id)
-        store.flush()
+        await store.flush()
         XCTAssertEqual(store.contentRevision, contentRevision + 1, "Reading activity must not restart full-text searches")
     }
 

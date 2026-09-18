@@ -1,5 +1,11 @@
 # 资料加载、搜索与阅读缓存优化
 
+## 2026-09-18 补充：按变化异步保存阅读状态
+
+后续保存实现已替换下面历史记录中的同步 `saveQueue.sync`：`LibraryStore` 只在收藏、阅读位置、最近阅读或同步合并实际改变状态时推进保存版本，`ReadingStateWriter` 在独立 actor 上编码并原子写入。`flush()` 现在是异步操作；并发调用复用同一版本的写入，保存期间的新状态按顺序落盘，保存失败不清除待保存标记。切文前等待保存时，等待前后的选择请求都要匹配，防止旧点击覆盖后续选择。
+
+新增测试验证无变化的多次 flush 和干净重启不改变文件 inode、慢写入期间 MainActor 仍能处理下一次收藏和阅读操作、最终文件保留最新状态，以及写入失败后的重试。已收敛的双端空闲同步不重写本机阅读状态或收藏快照。没有为本轮给出真机耗时或帧率结论。
+
 2026-09-17。基线为提交 `93eee4c`。本轮保留原来的共享 WebView、资料索引、异步附件读取与阅读状态写入节流，优化正文生命周期和异步请求。
 
 ## 已实现
@@ -47,8 +53,7 @@ JavaScript 使用相同公式样例生成 HTML：2500 组公式的原文为 336,
 ```sh
 mkdir -p .build/performance-review
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swiftc -O -parse-as-library -swift-version 5 \
-  StudyReader/Library/LibraryDisk.swift StudyReader/Library/LibraryOrganization.swift \
-  StudyReader/Library/LibraryContent.swift StudyReader/Library/LibraryStore.swift \
+  StudyReader/Library/*.swift StudyReader/Sync/*.swift \
   scripts/benchmark-library.swift -o .build/performance-review/optimized-bench
 .build/performance-review/optimized-bench
 node scripts/benchmark-reader.mjs
@@ -204,3 +209,19 @@ mapping process and mapped file (non-platform) have different Team IDs
 
 这四行只覆盖 macOS 和模拟器，`DEVELOPMENT_TEAM` 原样保留给 iPhone 真机与 Release。清掉 `.build/Mac` 重新构建后，App 与测试包都是 ad-hoc、Team 一致，Mac 90 项、模拟器 81 项 XCTest 全部通过。如果以后在 Xcode 里改过签名又出现同样的报错，先比较这两个产物的 `codesign -dvvv` 输出。
 - 未在真机上测量。模拟器使用 Mac 的处理器，上面所有毫秒数在 iPhone 上都会更大。
+
+## 搜索容错、片段与正文定位
+
+2026-09-18。搜索返回每篇的短片段、UTF-16 高亮范围及正文行位置；读取错误按文件收集，取消任务仍立即退出。保留六个扫描 worker 和最近八个完整查询缓存，不缓存失败批次，也不保留整篇正文。普通 LF 文本跳过 BOM、YAML 和 CRLF 的替换处理，计算位置只计数换行字节。
+
+用上面的 `benchmark-library.swift` 重新编译 `-O` 测量，1000 篇合成资料共 47.1 MB，文件系统缓存已热，单次测量，不含 200 ms 输入防抖：
+
+| 查询 | 结果 | 耗时 |
+|---|---:|---:|
+| 贝叶斯公式 | 1000 篇，含片段及位置 | 59.4 ms |
+| 不存在的知识点 | 0 篇 | 203.9 ms |
+| qzxmissingterm | 0 篇 | 124.8 ms |
+
+这些查询期间，5 ms 主线程探针的最大间隔为 6.4 ms 以内；资料库加载为 45.6 ms。数值不是实际设备的界面响应分位数。正文高亮仅处理命中的内容块，清理高亮时也只合并改动过的文本节点，不遍历整篇公式 DOM 做文本整理。
+
+真实 WKWebView 测试覆盖排版前排队的搜索跳转、折叠答案自动展开、已选中文章再次定位、清空待执行查询、跳转后的阅读记录及进程恢复不重放旧搜索；JavaScript 测试额外覆盖重复段落、Unicode、跨行内元素高亮、表格、代码、LaTeX 和 HTML 转义。Mac 与 iPhone 模拟器均通过相关回归。

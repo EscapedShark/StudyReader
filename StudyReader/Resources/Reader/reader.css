@@ -36,5 +36,7 @@ code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.85em;
 .answer[open] { padding-bottom:1em; }
 .image-missing { display:block; color:var(--muted); padding:1em; background:var(--soft); border-radius:8px; }
 ::selection { background:#95c8ae66; }
+.search-target { outline:2px solid var(--accent); outline-offset:6px; border-radius:3px; }
+mark.search-highlight { color:inherit; background:#e9b94970; border-radius:2px; }
 @media(max-width:600px) { article { padding:28px 22px calc(80px + env(safe-area-inset-bottom)); } h1 { font-size:1.55em; } }
 @media(prefers-reduced-motion:reduce) { * { scroll-behavior:auto!important; } }

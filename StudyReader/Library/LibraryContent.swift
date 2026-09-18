@@ -98,8 +98,51 @@ actor LibraryImageSizes {
     }
 }
 
+/// UTF-16 ranges bridge directly to AppKit and are converted to String indices by SwiftUI.
+struct LibrarySearchText: Equatable, Sendable {
+    var text: String
+    var highlights: [NSRange] = []
+
+    init(_ text: String, query: String) {
+        self.text = text
+        guard !query.isEmpty else { return }
+        var start = text.startIndex
+        while start < text.endIndex, let range = text[start...].localizedStandardRange(of: query), !range.isEmpty {
+            highlights.append(NSRange(range, in: text))
+            start = range.upperBound
+        }
+    }
+}
+
+struct ReaderSearchTarget: Equatable, Sendable {
+    let query: String
+    /// The actual source spelling preserves accents and PDF ligatures during highlighting.
+    let matchedText: String
+    let sourceLine: Int
+    var dictionary: [String: Any] { ["query": query, "matchedText": matchedText, "sourceLine": sourceLine] }
+}
+
+struct LibrarySearchHit: Equatable, Sendable {
+    let documentID: UUID
+    let title: LibrarySearchText
+    let snippet: LibrarySearchText?
+    let target: ReaderSearchTarget?
+}
+
+struct LibrarySearchIssue: Equatable, Sendable, Identifiable {
+    let id: UUID
+    let title: String
+    let path: String
+    let message: String
+}
+
+struct LibrarySearchResults: Sendable {
+    var hits: [UUID: LibrarySearchHit] = [:]
+    var issues: [LibrarySearchIssue] = []
+}
+
 protocol LibrarySearching: Sendable {
-    func matches(query: String, documents: [LibraryDocument], revision: Int) async throws -> Set<UUID>
+    func search(query: String, documents: [LibraryDocument], revision: Int) async throws -> LibrarySearchResults
 }
 
 /// This actor scans off the main thread. Cancellation is checked between documents and no body
@@ -111,10 +154,14 @@ protocol LibrarySearching: Sendable {
 /// Study material pasted out of LaTeX PDFs is full of those, so every query scans the library.
 actor LibrarySearchEngine: LibrarySearching {
     private var cachedRevision: Int?
-    private var results: [String: Set<UUID>] = [:]
+    private var results: [String: LibrarySearchResults] = [:]
     private var recentQueries: [String] = []
 
     func matches(query: String, documents: [LibraryDocument], revision: Int) async throws -> Set<UUID> {
+        Set(try await search(query: query, documents: documents, revision: revision).hits.keys)
+    }
+
+    func search(query: String, documents: [LibraryDocument], revision: Int) async throws -> LibrarySearchResults {
         try Task.checkCancellation()
         if cachedRevision != revision {
             results.removeAll()
@@ -130,7 +177,10 @@ actor LibrarySearchEngine: LibrarySearching {
         try Task.checkCancellation()
         // Another query may have replaced the corpus while this scan was running on the cores.
         // Its answer is still correct for its own caller, but it no longer describes this revision.
-        guard cachedRevision == revision else { return matches }
+        // A missing or temporarily unavailable file can recover without a corpus revision.
+        // Retrying the same query must read it again rather than cache an incomplete answer.
+        guard cachedRevision == revision, matches.issues.isEmpty else { return matches }
+        recentQueries.removeAll { $0 == query }
         if recentQueries.count >= 8 { results.removeValue(forKey: recentQueries.removeFirst()) }
         results[query] = matches
         recentQueries.append(query)
@@ -140,35 +190,72 @@ actor LibrarySearchEngine: LibrarySearching {
     /// Reading a thousand files one after another leaves the other cores idle for the whole query.
     /// Each worker takes every nth document, so neighbouring files of similar size spread evenly,
     /// and only one body per worker is resident at a time.
-    private static func scan(query: String, documents: [LibraryDocument]) async throws -> Set<UUID> {
-        let workers = min(6, max(1, ProcessInfo.processInfo.activeProcessorCount))
-        guard documents.count > 1, workers > 1 else {
-            return Set(try documents.filter { try Self.matches(query: query, in: $0) }.map(\.id))
-        }
-        return try await withThrowingTaskGroup(of: [UUID].self) { group in
+    private static func scan(query: String, documents: [LibraryDocument]) async throws -> LibrarySearchResults {
+        let workers = min(documents.count, 6, max(1, ProcessInfo.processInfo.activeProcessorCount))
+        return try await withThrowingTaskGroup(of: LibrarySearchResults.self) { group in
             for worker in 0..<workers {
                 group.addTask {
-                    var found: [UUID] = []
+                    var found = LibrarySearchResults()
                     var index = worker
                     while index < documents.count {
                         try Task.checkCancellation()
                         let document = documents[index]
-                        if try autoreleasepool(invoking: { try Self.matches(query: query, in: document) }) {
-                            found.append(document.id)
-                        }
+                        try autoreleasepool { try Self.search(query: query, in: document, into: &found) }
                         index += workers
                     }
                     return found
                 }
             }
-            var all = Set<UUID>()
-            for try await part in group { all.formUnion(part) }
+            var all = LibrarySearchResults()
+            for try await part in group {
+                all.hits.merge(part.hits) { first, _ in first }
+                all.issues.append(contentsOf: part.issues)
+            }
+            let order = Dictionary(uniqueKeysWithValues: documents.enumerated().map { ($0.element.id, $0.offset) })
+            all.issues.sort { order[$0.id, default: 0] < order[$1.id, default: 0] }
             return all
         }
     }
 
-    private static func matches(query: String, in document: LibraryDocument) throws -> Bool {
-        if query.isEmpty || document.title.localizedStandardContains(query) { return true }
-        return try LibraryDisk.readMarkdown(for: document).localizedStandardContains(query)
+    private static func search(query: String, in document: LibraryDocument, into result: inout LibrarySearchResults) throws {
+        let title = LibrarySearchText(document.title, query: query)
+        if query.isEmpty || !title.highlights.isEmpty {
+            result.hits[document.id] = LibrarySearchHit(documentID: document.id, title: title, snippet: nil, target: nil)
+        }
+        guard !query.isEmpty else { return }
+        do {
+            // Use the same front-matter removal and newline normalization as markdown-it.
+            var body = try LibraryDisk.readMarkdown(for: document)
+            if body.hasPrefix("\u{FEFF}") { body.removeFirst() }
+            if body.hasPrefix("---") {
+                body = body.replacingOccurrences(of: "^---\\r?\\n[\\s\\S]*?\\r?\\n(?:---|\\.\\.\\.)\\s*(?:\\r?\\n|$)", with: "", options: .regularExpression)
+            }
+            if body.utf8.contains(13) {
+                body = body.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+            }
+            try Task.checkCancellation()
+            guard let match = body.localizedStandardRange(of: query), !match.isEmpty else { return }
+            let matchedText = String(body[match])
+            let line = body[..<match.lowerBound].utf8.reduce(0) { $1 == 10 ? $0 + 1 : $0 }
+            var start = body.index(match.lowerBound, offsetBy: -20, limitedBy: body.startIndex) ?? body.startIndex
+            var end = body.index(match.upperBound, offsetBy: 95, limitedBy: body.endIndex) ?? body.endIndex
+            // Do not fill a short hit's preview with the previous/next paragraph's equations.
+            if let boundary = body[start..<match.lowerBound].range(of: "\n\n", options: .backwards) { start = boundary.upperBound }
+            if let boundary = body[match.upperBound..<end].range(of: "\n\n") { end = boundary.lowerBound }
+            let context = String(body[start..<end].prefix(240)).split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+            let truncatedStart = start > body.startIndex && body[body.index(before: start)] != "\n"
+            let truncatedEnd = end < body.endIndex && body[end] != "\n"
+            let excerpt = (truncatedStart ? "…" : "") + context + (truncatedEnd || body.distance(from: start, to: end) > 240 ? "…" : "")
+            let snippetQuery = matchedText.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+            result.hits[document.id] = LibrarySearchHit(documentID: document.id, title: title,
+                snippet: LibrarySearchText(excerpt, query: snippetQuery),
+                target: ReaderSearchTarget(query: query, matchedText: matchedText, sourceLine: line))
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try Task.checkCancellation()
+            result.issues.append(LibrarySearchIssue(id: document.id, title: document.title,
+                path: document.record.relativePath, message: error.localizedDescription))
+        }
     }
 }

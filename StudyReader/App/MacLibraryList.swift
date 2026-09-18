@@ -15,6 +15,12 @@ struct MacLibraryList: NSViewRepresentable {
         var isHeader = false
         var isFavorite = false
         var progress = 0.0
+        var searchHit: LibrarySearchHit? = nil
+        func withSearchHit(_ hit: LibrarySearchHit?) -> Row {
+            var row = self
+            row.searchHit = hit
+            return row
+        }
     }
     enum DropMode { case folders, reorder, none }
     enum Destination: Equatable {
@@ -32,6 +38,7 @@ struct MacLibraryList: NSViewRepresentable {
     var acceptsDrop: ([UUID], Destination) -> Bool = { _, _ in false }
     var performDrop: ([UUID], Destination) -> Bool = { _, _ in false }
     var menu: (String?) -> NSMenu? = { _ in nil }
+    var activate: ((String) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView { context.coordinator.makeScrollView() }
@@ -45,6 +52,7 @@ struct MacLibraryList: NSViewRepresentable {
         private var updatingSelection = false
         private var dragContext: String?
         private var dragOrder: [UUID]?
+        private var selectionEvent: Int?
 
         init(_ parent: MacLibraryList) { self.parent = parent }
 
@@ -70,6 +78,8 @@ struct MacLibraryList: NSViewRepresentable {
             table.autoresizingMask = [.width]
             table.delegate = self
             table.dataSource = self
+            table.target = self
+            table.action = #selector(activateRow)
             table.registerForDraggedTypes([DocumentDrag.pasteboardType, FolderDrag.pasteboardType])
             table.setDraggingSourceOperationMask(.move, forLocal: true)
             table.setDraggingSourceOperationMask([], forLocal: false)
@@ -94,7 +104,10 @@ struct MacLibraryList: NSViewRepresentable {
                 table.reloadData()
             } else {
                 let changed = IndexSet(value.rows.indices.filter { value.rows[$0] != previous.rows[$0] })
-                if !changed.isEmpty { table.reloadData(forRowIndexes: changed, columnIndexes: IndexSet(integer: 0)) }
+                if !changed.isEmpty {
+                    table.noteHeightOfRows(withIndexesChanged: changed)
+                    table.reloadData(forRowIndexes: changed, columnIndexes: IndexSet(integer: 0))
+                }
             }
             let index = value.rows.firstIndex { $0.id == value.selection && !$0.isHeader }
             let indexes = index.map { IndexSet(integer: $0) } ?? []
@@ -105,13 +118,22 @@ struct MacLibraryList: NSViewRepresentable {
         func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { parent.rows[row].isHeader }
         func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { !parent.rows[row].isHeader }
         func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-            parent.rows[row].isHeader ? 28 : (parent.isSidebar ? 30 : 56)
+            parent.rows[row].isHeader ? 28 : (parent.isSidebar ? 30 : (parent.rows[row].searchHit == nil ? 56 : 108))
         }
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !updatingSelection else { return }
+            selectionEvent = NSApp.currentEvent?.eventNumber
             let row = table.selectedRow
             let id = parent.rows.indices.contains(row) ? parent.rows[row].id : nil
             if parent.selection != id { parent.selection = id }
+        }
+        @objc private func activateRow() {
+            // Selecting another row already invokes the binding. A second click on the current
+            // result must also navigate, without scheduling the same jump twice for one event.
+            let event = NSApp.currentEvent?.eventNumber
+            let row = table.clickedRow >= 0 ? table.clickedRow : table.selectedRow
+            guard event == nil || selectionEvent != event, parent.rows.indices.contains(row) else { return }
+            parent.activate?(parent.rows[row].id)
         }
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             let identifier = NSUserInterfaceItemIdentifier("library-row")
@@ -212,21 +234,28 @@ private final class LibraryCellView: NSTableCellView {
     private let icon = NSImageView()
     private let accessory = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
+    private let snippet = NSTextField(wrappingLabelWithString: "")
     private var titleLeading: NSLayoutConstraint!
     private var titleTrailing: NSLayoutConstraint!
+    private var titleCenter: NSLayoutConstraint!
+    private var titleTop: NSLayoutConstraint!
+    private var snippetConstraints: [NSLayoutConstraint] = []
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         title.maximumNumberOfLines = 2
         title.lineBreakMode = .byTruncatingTail
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        snippet.maximumNumberOfLines = 3
+        snippet.lineBreakMode = .byTruncatingTail
+        snippet.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         accessory.alignment = .right
         progress.style = .bar
         progress.isIndeterminate = false
         progress.minValue = 0
         progress.maxValue = 1
         progress.controlSize = .mini
-        for view in [title, icon, accessory, progress] {
+        for view in [title, icon, accessory, progress, snippet] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -234,8 +263,16 @@ private final class LibraryCellView: NSTableCellView {
         imageView = icon
         titleLeading = title.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10)
         titleTrailing = title.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10)
+        titleCenter = title.centerYAnchor.constraint(equalTo: centerYAnchor)
+        titleTop = title.topAnchor.constraint(equalTo: topAnchor, constant: 8)
+        snippetConstraints = [
+            snippet.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 5),
+            snippet.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -10)
+        ]
         NSLayoutConstraint.activate([
-            titleLeading, titleTrailing, title.centerYAnchor.constraint(equalTo: centerYAnchor),
+            titleLeading, titleTrailing, titleCenter,
+            snippet.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            snippet.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8), icon.centerYAnchor.constraint(equalTo: centerYAnchor),
             icon.widthAnchor.constraint(equalToConstant: 18), icon.heightAnchor.constraint(equalToConstant: 18),
             accessory.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10), accessory.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -246,10 +283,17 @@ private final class LibraryCellView: NSTableCellView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func configure(_ row: MacLibraryList.Row, sidebar: Bool) {
-        title.stringValue = row.title
         title.font = .systemFont(ofSize: row.isHeader ? 11 : 13, weight: sidebar ? .regular : .semibold)
         title.textColor = row.isHeader ? .secondaryLabelColor : .labelColor
-        title.maximumNumberOfLines = sidebar ? 1 : 2
+        title.attributedStringValue = highlighted(row.searchHit?.title ?? LibrarySearchText(row.title, query: ""),
+                                                  font: title.font!, color: title.textColor!)
+        title.maximumNumberOfLines = sidebar || row.searchHit != nil ? 1 : 2
+        titleCenter.isActive = row.searchHit == nil
+        titleTop.isActive = row.searchHit != nil
+        for constraint in snippetConstraints { constraint.isActive = row.searchHit != nil }
+        snippet.isHidden = row.searchHit == nil
+        snippet.attributedStringValue = highlighted(row.searchHit?.snippet ?? LibrarySearchText("标题匹配", query: ""),
+                                                    font: .systemFont(ofSize: 12), color: .secondaryLabelColor)
         icon.image = row.symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }
         icon.contentTintColor = .controlAccentColor
         icon.isHidden = row.symbol == nil
@@ -261,6 +305,14 @@ private final class LibraryCellView: NSTableCellView {
         titleTrailing.constant = accessory.isHidden ? -10 : -42
         progress.isHidden = sidebar || row.progress <= 0.02
         progress.doubleValue = min(1, max(0, row.progress))
+    }
+    private func highlighted(_ value: LibrarySearchText, font: NSFont, color: NSColor) -> NSAttributedString {
+        let result = NSMutableAttributedString(string: value.text, attributes: [.font: font, .foregroundColor: color])
+        for range in value.highlights where NSMaxRange(range) <= result.length {
+            result.addAttributes([.backgroundColor: NSColor.systemYellow.withAlphaComponent(0.35),
+                                  .foregroundColor: NSColor.labelColor], range: range)
+        }
+        return result
     }
 }
 

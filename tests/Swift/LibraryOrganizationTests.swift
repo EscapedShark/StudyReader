@@ -85,7 +85,7 @@ final class LibraryOrganizationTests: XCTestCase {
         let original = try Data(contentsOf: document.fileURL)
         store.toggleFavorite(document.id)
         store.updatePosition(ReadingPosition(anchor: "line-1", excerpt: "Article", offset: 0.2, progress: 0.4), id: document.id)
-        store.flush()
+        await store.flush()
         try store.moveDocuments([document.id], to: destination.id)
         let reopened = LibraryStore(rootURL: root, seedSamples: false)
         await reopened.loadIfNeeded()
@@ -184,7 +184,7 @@ final class LibraryOrganizationTests: XCTestCase {
         let contentRevision = store.contentRevision
         store.toggleFavorite(ids[0])
         store.updatePosition(ReadingPosition(anchor: "line-2", excerpt: "正文", offset: 0.5, progress: 0.74), id: ids[0])
-        store.flush()
+        await store.flush()
 
         try store.renameFolder(folder.id, to: "  概率论  ")
         try store.renameFolder(empty, to: "待学习")
@@ -251,7 +251,7 @@ final class LibraryOrganizationTests: XCTestCase {
         let revision = store.contentRevision
         store.toggleFavorite(document.id)
         store.updatePosition(ReadingPosition(anchor: "line-2", excerpt: "body", offset: 1, progress: 0.7), id: document.id)
-        store.flush()
+        await store.flush()
         try store.reorderFolders([a], visibleIDs: ids, at: 0)
         try store.renameFolder(a, to: "Z")
         XCTAssertEqual(store.collections.map(\.id), [a, sourceFolder.id, b])

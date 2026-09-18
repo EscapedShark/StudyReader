@@ -40,7 +40,7 @@ struct LibraryDocument: Identifiable, Sendable {
     }
 }
 
-enum ImportResult: Sendable { case imported([LibraryDocument]), duplicate }
+enum ImportResult: Sendable { case imported([LibraryDocument]), duplicate, emptyFolder(String) }
 
 struct DocumentDeletion: Sendable {
     let collection: CollectionManifest
@@ -154,6 +154,7 @@ enum LibraryDisk {
         let sourceInfo = try source.resourceValues(forKeys: keys)
         guard sourceInfo.isSymbolicLink != true else { throw ReaderFailure(message: "请导入实际文件，暂不导入符号链接。") }
         let isDirectory = sourceInfo.isDirectory == true
+        let package = isDirectory ? try LibraryPackageManifest.read(from: source) : nil
         var files: [(path: String, url: URL)] = []
         if isDirectory {
             var enumerationError: Error?
@@ -176,10 +177,18 @@ enum LibraryDisk {
             files = [(source.lastPathComponent, source)]
         }
         files.sort { $0.path < $1.path }
+        if let package {
+            let markdownPaths = files.filter { markdownExtensions.contains($0.url.pathExtension.lowercased()) }.map(\.path)
+            guard Set(package.documentPaths) == Set(markdownPaths) else {
+                throw ReaderFailure(message: "资料包中的文章与清单不一致，请检查备份是否完整。")
+            }
+            if package.documentPaths.isEmpty { return .emptyFolder(package.name) }
+        }
         guard files.contains(where: { markdownExtensions.contains($0.url.pathExtension.lowercased()) }) else {
             throw ReaderFailure(message: "这个文件夹里没有 Markdown 文件。")
         }
         var hasher = SHA256()
+        if let package { hasher.update(data: try SyncFolderIO.encoder.encode(package)) }
         var totalBytes = 0
         for file in files {
             let size = try file.url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
@@ -213,11 +222,15 @@ enum LibraryDisk {
                 records.append(DocumentRecord(id: UUID(), title: DocumentFileName.title(for: file.path), relativePath: file.path))
             }
         }
-        let manifest = CollectionManifest(id: collectionID, name: name ?? source.deletingPathExtension().lastPathComponent,
+        let manifest = CollectionManifest(id: collectionID, name: name ?? package?.name ?? source.deletingPathExtension().lastPathComponent,
                                           importedAt: Date(), fingerprint: fingerprint, documents: records)
         try JSONEncoder().encode(manifest).write(to: staging.appendingPathComponent(".reader-collection.json"), options: .atomic)
         try fm.moveItem(at: staging, to: destination)
-        let ordered = records.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
+        let packageOrder = Dictionary(uniqueKeysWithValues: (package?.documentPaths ?? []).enumerated().map { ($0.element, $0.offset) })
+        let ordered = records.sorted {
+            if package != nil { return packageOrder[$0.relativePath, default: 0] < packageOrder[$1.relativePath, default: 0] }
+            return $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
+        }
         return .imported(ordered.map { LibraryDocument(record: $0, collection: manifest, rootURL: destination) })
     }
 }

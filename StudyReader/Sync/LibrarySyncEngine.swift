@@ -43,6 +43,14 @@ actor LibrarySyncEngine {
         result.updates = ReadingProgressSnapshot.remap(result.updates, aliases: cache.aliases)
         return result
     }
+    func exchangeFavorites(_ updates: [String: FavoriteUpdate], device: UUID, documentIDs: Set<UUID>, folder: URL) throws -> FavoriteExchange {
+        let local = updates.filter { key, _ in UUID(uuidString: key).map { documentIDs.contains($0) } ?? false }
+        let snapshot = FavoriteSnapshot(library: cache.libraryID, device: device,
+            updates: FavoriteSnapshot.remap(local, aliases: cache.aliases))
+        var result = try FavoriteSync.exchange(snapshot, in: folder)
+        result.updates = FavoriteSnapshot.remap(result.updates, aliases: cache.aliases)
+        return result
+    }
     private func persist() throws { try SyncFolderIO.encoder.encode(cache).write(to: stateURL, options: .atomic) }
 
     private func cacheBlob(_ data: Data, extension ext: String) throws -> String {

@@ -27,6 +27,7 @@ export function attachmentPath(href) {
 }
 
 let renderer, currentBaseURL = '', currentImageSizes = {};
+const sourceRenderers = new Set();
 
 /// Building the parser and the formula plugin costs more than parsing a short article, so one
 /// instance serves every article. The base URL is swapped per call because rendering is synchronous.
@@ -63,6 +64,21 @@ export function renderMarkdown(source, baseURL = 'reader://library/sample/docume
   const outline = [];
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
+    // Standalone renderers (code fences and display math) do not all emit token attributes.
+    if (token.map && token.block && token.nesting === 0 && token.type !== 'inline' && !sourceRenderers.has(token.type)) {
+      const original = md.renderer.rules[token.type] || ((items, index, options, _env, self) => self.renderToken(items, index, options));
+      md.renderer.rules[token.type] = (items, index, options, env, self) => {
+        const item = items[index], html = original(items, index, options, env, self);
+        if (!item.map) return html;
+        const anchor = item.level === 0 ? ` data-anchor="line-${item.map[0]}" class="reading-block"` : '';
+        return `<div data-source-start="${item.map[0]}" data-source-end="${item.map[1]}"${anchor}>${html}</div>`;
+      };
+      sourceRenderers.add(token.type);
+    }
+    if (token.map && token.nesting === 1 && !token.hidden) {
+      token.attrSet('data-source-start', String(token.map[0]));
+      token.attrSet('data-source-end', String(token.map[1]));
+    }
     if (token.map && token.level === 0 && token.nesting === 1) {
       token.attrSet('data-anchor', `line-${token.map[0]}`);
       token.attrJoin('class', 'reading-block');
@@ -95,6 +111,8 @@ export function foldAnswers(root, enabled) {
     const summary = root.ownerDocument.createElement('summary');
     summary.textContent = heading.textContent;
     summary.id = heading.id;
+    summary.dataset.sourceStart = heading.dataset.sourceStart;
+    summary.dataset.sourceEnd = heading.dataset.sourceEnd;
     if (heading.dataset.anchor) {
       details.dataset.anchor = heading.dataset.anchor;
       details.classList.add('reading-block');

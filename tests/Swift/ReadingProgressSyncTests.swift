@@ -42,7 +42,7 @@ final class ReadingProgressSyncTests: XCTestCase {
         // Both read offline from the 80% checkpoint. The later reader deliberately rereads an
         // earlier section; uploading the older 90% checkpoint afterwards must not undo that.
         a.updatePosition(position(0.9), id: id, readAt: Date(timeIntervalSince1970: 2000))
-        a.flush()
+        await a.flush()
         b.updatePosition(position(0.25), id: id, readAt: Date(timeIntervalSince1970: 3000))
         await b.synchronize()
         let restarted = LibraryStore(rootURL: temp.appendingPathComponent("A"), seedSamples: false, automaticSync: false)
@@ -102,7 +102,7 @@ final class ReadingProgressSyncTests: XCTestCase {
         let (a, b, id) = try await pair()
         defer { a.disconnectSyncFolder(); b.disconnectSyncFolder() }
         a.updatePosition(position(0.6), id: id)
-        a.flush()
+        await a.flush()
         let unavailable = temp.appendingPathComponent("Unavailable")
         try FileManager.default.moveItem(at: cloud, to: unavailable)
         await a.synchronize()
