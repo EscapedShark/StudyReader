@@ -4,12 +4,14 @@ import { fileURLToPath } from 'node:url';
 const output = new URL('../StudyReader/Resources/Reader/', import.meta.url);
 await mkdir(output, { recursive:true });
 await build({ entryPoints:['WebReader/reader.mjs'], outfile:fileURLToPath(new URL('reader.js', output)),
-  bundle:true, minify:true, format:'iife', target:['safari17'], legalComments:'linked' });
+  // Keep significant whitespace in grammar strings escaped in the checked-in bundle.
+  bundle:true, minify:true, format:'iife', target:['safari17'], supported:{ 'template-literal':false }, legalComments:'linked' });
 for (const file of ['index.html','reader.css']) await copyFile(`WebReader/${file}`, new URL(file, output));
 await copyFile('node_modules/katex/dist/katex.min.css', new URL('katex.min.css', output));
 await cp('node_modules/katex/dist/fonts', new URL('fonts', output), { recursive:true });
 const licenseFiles = [
   ['markdown-it','node_modules/markdown-it/LICENSE'],
+  ['highlight.js','node_modules/highlight.js/LICENSE'],
   ['KaTeX','node_modules/katex/LICENSE'],
   ['KaTeX fonts','WebReader/licenses/KaTeX-fonts.txt'],
   ['@mdit/plugin-katex','node_modules/@mdit/plugin-katex/LICENSE'],

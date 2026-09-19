@@ -1,5 +1,6 @@
 import MarkdownIt from 'markdown-it';
 import { katex } from '@mdit/plugin-katex';
+import { highlightCode } from './code-highlight.mjs';
 
 export function stripFrontMatter(source) {
   return source.replace(/^\uFEFF/, '').replace(/^---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)\s*(?:\r?\n|$)/, '');
@@ -33,7 +34,12 @@ const sourceRenderers = new Set();
 /// instance serves every article. The base URL is swapped per call because rendering is synchronous.
 function markdown() {
   if (renderer) return renderer;
-  const md = new MarkdownIt({ html: false, linkify: false, typographer: false });
+  const md = new MarkdownIt({ html: false, linkify: false, typographer: false, highlight: highlightCode });
+  md.renderer.rules.code_block = (tokens, idx, _options, _env, self) => {
+    const token = tokens[idx];
+    const code = highlightCode(token.content) || md.utils.escapeHtml(token.content);
+    return `<pre${self.renderAttrs(token)}><code>${code}</code></pre>\n`;
+  };
   md.use(katex, { delimiters: 'all', mathFence: true, trust: false, throwOnError: false,
     maxExpand: 500, maxSize: 30, output: 'htmlAndMathml' });
   const originalImage = md.renderer.rules.image;

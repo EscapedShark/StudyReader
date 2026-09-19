@@ -1,8 +1,21 @@
-:root { color-scheme: light dark; --reading-size: 18px; --reading-width:840px; --ink:#253333; --muted:#6d7b78; --paper:#fcfbf7; --line:#e2e7e0; --soft:#f0f3ed; --accent:#287267; }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --ink:#dce4df; --muted:#9baaa2; --paper:#1d2423; --line:#38433e; --soft:#26302c; --accent:#8cd3ba; }
+:root {
+  color-scheme:light dark; --reading-size:18px; --reading-width:840px;
+  --ink:#253333; --muted:#6d7b78; --paper:#fcfbf7; --line:#e2e7e0; --soft:#f0f3ed; --accent:#287267;
+  --code-comment:#60706b; --code-keyword:#8541a0; --code-string:#246344;
+  --code-number:#a04016; --code-title:#1d5c91; --code-type:#80511b; --code-tag:#a03652;
 }
-:root[data-theme="dark"] { color-scheme:dark; --ink:#dce4df; --muted:#9baaa2; --paper:#1d2423; --line:#38433e; --soft:#26302c; --accent:#8cd3ba; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink:#dce4df; --muted:#9baaa2; --paper:#1d2423; --line:#38433e; --soft:#26302c; --accent:#8cd3ba;
+    --code-comment:#a0aea7; --code-keyword:#d7a5f5; --code-string:#a0d7a6;
+    --code-number:#f2b08e; --code-title:#96c8ff; --code-type:#ebd091; --code-tag:#ffa6b9;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme:dark; --ink:#dce4df; --muted:#9baaa2; --paper:#1d2423; --line:#38433e; --soft:#26302c; --accent:#8cd3ba;
+  --code-comment:#a0aea7; --code-keyword:#d7a5f5; --code-string:#a0d7a6;
+  --code-number:#f2b08e; --code-title:#96c8ff; --code-type:#ebd091; --code-tag:#ffa6b9;
+}
 :root[data-theme="light"] { color-scheme:light; }
 * { box-sizing:border-box; }
 html { background:var(--paper); color:var(--ink); scroll-padding-top:24px; }
@@ -21,9 +34,24 @@ img { display:block; max-width:100%; height:auto; margin:1.5em auto; border-radi
 table { display:block; max-width:100%; overflow-x:auto; overscroll-behavior-x:contain; border-collapse:collapse; margin:1.4em 0; font-size:.92em; }
 th,td { padding:.6em .95em; text-align:left; border-bottom:1px solid var(--line); white-space:nowrap; }
 th { background:var(--soft); font-weight:600; }
-pre { padding:1em 1.2em; overflow-x:auto; overscroll-behavior-x:contain; border-radius:10px; background:var(--soft); line-height:1.6; }
+pre { max-width:100%; padding:1em 1.2em; overflow-x:auto; overscroll-behavior-x:contain; border:1px solid var(--line); border-radius:10px; background:var(--soft); line-height:1.65; tab-size:4; }
 code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.85em; }
+pre code { display:block; color:var(--ink); white-space:pre; overflow-wrap:normal; font-variant-ligatures:none; }
 :not(pre)>code { background:var(--soft); padding:.15em .3em; border-radius:4px; }
+/* Token colors change with the reading theme without rebuilding the article. */
+pre .hljs-comment, pre .hljs-quote { color:var(--code-comment); font-style:italic; }
+pre .hljs-keyword, pre .hljs-selector-tag, pre .hljs-doctag, pre .hljs-literal { color:var(--code-keyword); }
+pre .hljs-string, pre .hljs-regexp, pre .hljs-template-tag, pre .hljs-template-variable { color:var(--code-string); }
+pre .hljs-number, pre .hljs-symbol, pre .hljs-bullet, pre .hljs-variable { color:var(--code-number); }
+pre .hljs-title, pre .hljs-section, pre .hljs-attr, pre .hljs-attribute, pre .hljs-selector-id, pre .hljs-selector-class { color:var(--code-title); }
+pre .hljs-type, pre .hljs-built_in, pre .hljs-meta, pre .hljs-selector-pseudo { color:var(--code-type); }
+pre .hljs-name, pre .hljs-tag { color:var(--code-tag); }
+pre .hljs-subst, pre .hljs-punctuation, pre .hljs-operator { color:var(--ink); }
+pre .hljs-addition { color:var(--code-string); background:#27864b18; }
+pre .hljs-deletion { color:var(--code-tag); background:#bd365218; }
+pre .hljs-emphasis { font-style:italic; }
+pre .hljs-strong, pre .hljs-section { font-weight:600; }
+pre .hljs-link { color:var(--code-title); text-decoration:underline; }
 .katex-display { max-width:100%; overflow-x:auto; overflow-y:hidden; overscroll-behavior-x:contain; padding:.5em .1em; margin:1.4em 0; }
 .katex { font-size:1.1em; cursor:text; }
 /* KaTeX mirrors every formula as an invisible 1px MathML twin that only a screen reader uses.

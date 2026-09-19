@@ -17,6 +17,61 @@ final class ReadingProgressTests: XCTestCase {
         }
     }
 
+    @MainActor func testCodeHighlightingUsesReadableThemesAndKeepsLongLinesInsideCodeBlocks() async throws {
+        let record = DocumentRecord(id: UUID(), title: "代码高亮", relativePath: "code.md")
+        let collection = CollectionManifest(id: UUID(), name: "Test", importedAt: Date(), fingerprint: "test", documents: [record])
+        let document = LibraryDocument(record: record, collection: collection, rootURL: FileManager.default.temporaryDirectory)
+        let source = "# 中文注释\ndef average(scores):\n    return sum(scores) / len(scores)\n\nprint(\"平均分\", average([86, 92, 95]))\n" +
+            "message = \"" + String(repeating: "这是一段较长的代码", count: 20) + "\"\n"
+        let reader = ReaderController()
+        reader.webView.frame = CGRect(x: 0, y: 0, width: 920, height: 700)
+        reader.display(document, markdown: "# 代码高亮\n\n```python\n" + source + "```\n\n公式 $x^2$。", position: nil,
+            preferences: ReaderPreferences(fontSize: 18, theme: "light", foldAnswers: false), roots: [:])
+        try await waitForReader(reader)
+
+        var originalHTML: String?
+        var themeColors: [String: String] = [:]
+        for width in [920.0, 390.0] {
+            reader.webView.frame.size.width = width
+            for theme in ["light", "dark", "system"] {
+                let result = try await reader.webView.callAsyncJavaScript(#"""
+                    await window.Reader.preferences({ fontSize: 18, theme, foldAnswers: false });
+                    const code = document.querySelector('pre code'), pre = code.parentElement;
+                    const color = element => getComputedStyle(element).color;
+                    const luminance = color => {
+                        const rgb = color.match(/[\d.]+/g).slice(0, 3).map(n => Number(n) / 255)
+                            .map(c => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+                        return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+                    };
+                    const background = luminance(getComputedStyle(pre).backgroundColor);
+                    const tokens = [...code.querySelectorAll('span[class*="hljs-"]')];
+                    const contrasts = [code, ...tokens].map(element => {
+                        const foreground = luminance(color(element));
+                        return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
+                    });
+                    pre.scrollLeft = 100;
+                    return { text: code.textContent, html: code.innerHTML, tokens: tokens.length,
+                        minContrast: Math.min(...contrasts), keyword: color(code.querySelector('.hljs-keyword')),
+                        distinctColors: new Set(tokens.map(color)).size,
+                        overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+                        codeScrolls: pre.scrollLeft > 0, math: document.querySelectorAll('.katex').length };
+                    """#, arguments: ["theme": theme], in: nil, contentWorld: .page) as? [String: Any]
+                let values = try XCTUnwrap(result)
+                XCTAssertEqual(values["text"] as? String, source)
+                XCTAssertGreaterThan(try XCTUnwrap(values["tokens"] as? Int), 10)
+                XCTAssertGreaterThanOrEqual(try XCTUnwrap(values["distinctColors"] as? Int), 5)
+                XCTAssertGreaterThanOrEqual(try XCTUnwrap(values["minContrast"] as? Double), 4.5)
+                XCTAssertEqual(values["overflow"] as? Bool, false)
+                XCTAssertEqual(values["codeScrolls"] as? Bool, true)
+                XCTAssertEqual(values["math"] as? Int, 1)
+                if let originalHTML { XCTAssertEqual(values["html"] as? String, originalHTML) }
+                originalHTML = values["html"] as? String
+                themeColors[theme] = values["keyword"] as? String
+            }
+        }
+        XCTAssertNotEqual(themeColors["light"], themeColors["dark"])
+    }
+
     #if os(macOS)
     @MainActor func testPageWidthReflowsWithoutLosingTheParagraphAndFitsResizedWindows() async throws {
         let record = DocumentRecord(id: UUID(), title: "页面宽度", relativePath: "width.md")
@@ -57,10 +112,14 @@ final class ReadingProgressTests: XCTestCase {
         let before = try await layout()
         XCTAssertGreaterThan(try XCTUnwrap(before["sequence"] as? Int), 0)
 
-        for (width, expected) in [(ReaderPageWidth.wide, 1120.0), (.full, 1600.0), (.standard, 840.0)] {
+        for width in [ReaderPageWidth.wide, .full, .standard] {
             preferences.pageWidth = width
             reader.preferences(preferences)
             let after = try await layout()
+            // A persistent macOS scrollbar occupies part of the 1600-point WebView.
+            // Full width fills the document viewport, which can therefore be narrower.
+            let viewport = try XCTUnwrap(after["viewport"] as? Double)
+            let expected = width == .full ? viewport : width == .wide ? 1120.0 : 840.0
             XCTAssertEqual(try XCTUnwrap(after["width"] as? Double), expected, accuracy: 1)
             XCTAssertEqual(after["anchor"] as? String, before["anchor"] as? String)
             XCTAssertEqual(try XCTUnwrap(after["offset"] as? Double), try XCTUnwrap(before["offset"] as? Double), accuracy: 0.01)
@@ -74,7 +133,8 @@ final class ReadingProgressTests: XCTestCase {
         reader.reloadReader()
         try await waitForReader(reader)
         let reloaded = try await layout()
-        XCTAssertEqual(try XCTUnwrap(reloaded["width"] as? Double), 1600, accuracy: 1, "Recovery must retain the selected width")
+        XCTAssertEqual(try XCTUnwrap(reloaded["width"] as? Double), try XCTUnwrap(reloaded["viewport"] as? Double), accuracy: 1,
+                       "Recovery must retain full width within the actual viewport")
 
         for windowWidth in [480.0, 2000.0] {
             reader.webView.frame.size.width = windowWidth
